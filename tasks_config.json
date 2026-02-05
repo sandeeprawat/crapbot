@@ -1,0 +1,33 @@
+{
+  "scheduled_tasks": [
+    {
+      "name": "Heartbeat",
+      "description": "Simple heartbeat to show the agent is alive",
+      "type": "builtin",
+      "function": "heartbeat_task",
+      "interval_seconds": 60,
+      "enabled": true,
+      "use_history": false
+    },
+    {
+      "name": "Self-Reflection",
+      "description": "Periodic self-reflection on capabilities",
+      "type": "builtin", 
+      "function": "self_reflection_task",
+      "interval_seconds": 300,
+      "enabled": true,
+      "use_history": true,
+      "max_history": 5
+    },
+    {
+      "name": "Knowledge Check",
+      "description": "Periodic knowledge sharing",
+      "type": "builtin",
+      "function": "knowledge_check_task",
+      "interval_seconds": 180,
+      "enabled": true,
+      "use_history": false
+    }
+  ],
+  "custom_tasks": []
+}
