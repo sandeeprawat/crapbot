@@ -1,8 +1,0 @@
-{
-  "task_name": "Knowledge Check",
-  "run_number": 1,
-  "timestamp": "2026-02-06T02:23:40.832961",
-  "success": true,
-  "result": "Knowledge (latest trends in AI): A major trend is the shift to small, efficient on\u2011device models that combine quantization/distillation with retrieval and tool use, delivering near\u2013big-model quality while cutting cost, latency, and privacy risk.",
-  "error": null
-}

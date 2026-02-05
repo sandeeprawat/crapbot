@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Task data (generated at runtime)
+task_data/
+
+# Environment
+.env
+venv/
+.venv/
