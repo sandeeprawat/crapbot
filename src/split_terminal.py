@@ -1,7 +1,9 @@
 """Split-screen terminal UI using curses.
 
-Left pane:  interactive user input (commands / chat).
-Right pane: autonomous AI agent output (runs continuously).
+Three-pane layout:
+  Left pane:   interactive user input (commands / chat) — control panel
+  Middle pane: autonomous AI agent output (runs continuously)
+  Right pane:  critic AI agent output (reviews primary agent, provides feedback)
 """
 import curses
 import threading
@@ -12,7 +14,7 @@ from datetime import datetime
 from ai_client import get_ai_client
 from task_manager import get_task_manager, list_task_folders
 from autonomous_tasks import add_scheduled_task, remove_scheduled_task, list_configured_tasks
-from autonomous_agent import AutonomousAgent
+from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox
 from config import AGENT_NAME
 
 
@@ -42,18 +44,25 @@ class PaneBuffer:
 
 
 class SplitTerminal:
-    """Curses-based split-screen terminal."""
+    """Curses-based three-pane split-screen terminal."""
 
     def __init__(self):
         self.ai = get_ai_client()
         self.tasks = get_task_manager()
         self.left_buf = PaneBuffer()
+        self.mid_buf = PaneBuffer()
         self.right_buf = PaneBuffer()
         self.input_line = ""
         self.input_history: list = []
         self.input_hist_idx = -1
         self.running = False
+
+        # Inter-agent communication
+        self.agent_to_critic = AgentMailbox()  # primary -> critic
+        self.critic_to_agent = AgentMailbox()  # critic -> primary
+
         self.auto_agent: AutonomousAgent = None
+        self.critic_agent: CriticAgent = None
         self._stdscr = None
 
         # Commands (same set as old Terminal, plus agent controls)
@@ -77,7 +86,9 @@ class SplitTerminal:
             "start": self.cmd_start_agent,
             "pause": self.cmd_pause_agent,
             "resume": self.cmd_resume_agent,
+            "instruct": self.cmd_instruct_agent,
             "clear": self.cmd_clear,
+            "agents": self.cmd_agents_status,
             "quit": self.cmd_quit,
             "exit": self.cmd_quit,
         }
@@ -91,6 +102,8 @@ class SplitTerminal:
         self.running = False
         if self.auto_agent:
             self.auto_agent.stop()
+        if self.critic_agent:
+            self.critic_agent.stop()
 
     # --------------------------------------------------------------- curses
     def _main(self, stdscr):
@@ -102,21 +115,24 @@ class SplitTerminal:
         # Colours
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_GREEN, -1)   # left header
-        curses.init_pair(2, curses.COLOR_CYAN, -1)     # right header
+        curses.init_pair(1, curses.COLOR_GREEN, -1)    # left header
+        curses.init_pair(2, curses.COLOR_CYAN, -1)     # middle header
         curses.init_pair(3, curses.COLOR_YELLOW, -1)   # input prompt
         curses.init_pair(4, curses.COLOR_RED, -1)      # separator
+        curses.init_pair(5, curses.COLOR_MAGENTA, -1)  # right header (critic)
 
         self.running = True
 
         # Welcome
-        self.left_buf.add(f"  {AGENT_NAME} - Split Screen Mode")
+        self.left_buf.add(f"  {AGENT_NAME} - Three-Pane Mode")
         self.left_buf.add("  Type 'help' for commands.")
-        self.left_buf.add("  Right pane runs an autonomous AI agent.")
+        self.left_buf.add("  Middle: autonomous agent")
+        self.left_buf.add("  Right:  critic agent")
         self.left_buf.add("")
 
-        # Start autonomous agent
+        # Start both agents
         self._launch_auto_agent()
+        self._launch_critic_agent()
 
         # Main loop
         while self.running:
@@ -126,52 +142,84 @@ class SplitTerminal:
         # Cleanup
         if self.auto_agent:
             self.auto_agent.stop()
+        if self.critic_agent:
+            self.critic_agent.stop()
 
     def _launch_auto_agent(self):
-        """Start the autonomous agent feeding into the right pane."""
+        """Start the autonomous agent feeding into the middle pane."""
         self.auto_agent = AutonomousAgent(
             cycle_delay=30,
-            on_output=lambda text: self.right_buf.add(text),
+            on_output=lambda text: self.mid_buf.add(text),
+            inbox=self.critic_to_agent,   # receives critic feedback
+            outbox=self.agent_to_critic,  # sends output to critic
         )
         self.auto_agent.start()
+
+    def _launch_critic_agent(self):
+        """Start the critic agent feeding into the right pane."""
+        self.critic_agent = CriticAgent(
+            cycle_delay=5,
+            on_output=lambda text: self.right_buf.add(text),
+            inbox=self.agent_to_critic,   # reads primary agent output
+            outbox=self.critic_to_agent,  # sends feedback to primary
+        )
+        self.critic_agent.start()
 
     # --------------------------------------------------------------- draw
     def _draw(self, stdscr):
         try:
             height, width = stdscr.getmaxyx()
-            if height < 6 or width < 40:
+            if height < 6 or width < 60:
                 stdscr.clear()
-                stdscr.addstr(0, 0, "Terminal too small! Resize.")
+                stdscr.addstr(0, 0, "Terminal too small! Need 60+ cols.")
                 stdscr.refresh()
                 return
 
-            mid = width // 2
-            left_w = mid - 1
-            right_w = width - mid - 1
+            # Three columns: left (control), middle (agent), right (critic)
+            col1 = width // 3
+            col2 = col1 * 2
+            left_w = col1 - 1
+            mid_w = col2 - col1 - 1
+            right_w = width - col2 - 1
 
             stdscr.erase()
 
             # ---- headers ----
-            left_title = f" {AGENT_NAME} - Interactive "
-            right_status = "RUNNING" if (self.auto_agent and self.auto_agent.is_running) else (
-                "PAUSED" if (self.auto_agent and self.auto_agent.is_paused) else "STOPPED"
+            left_title = f" {AGENT_NAME} - Control "
+
+            agent_status = "RUN" if (self.auto_agent and self.auto_agent.is_running) else (
+                "PAUSE" if (self.auto_agent and self.auto_agent.is_paused) else "STOP"
             )
-            cycle = self.auto_agent.cycle_count if self.auto_agent else 0
-            right_title = f" Autonomous Agent [{right_status}] (cycle {cycle}) "
+            agent_cycle = self.auto_agent.cycle_count if self.auto_agent else 0
+            mid_title = f" Agent [{agent_status}] #{agent_cycle} "
+
+            critic_status = "RUN" if (self.critic_agent and self.critic_agent.is_running) else (
+                "PAUSE" if (self.critic_agent and self.critic_agent.is_paused) else "STOP"
+            )
+            critic_cycle = self.critic_agent.cycle_count if self.critic_agent else 0
+            right_title = f" Critic [{critic_status}] #{critic_cycle} "
 
             stdscr.attron(curses.color_pair(1))
             stdscr.addstr(0, 0, left_title[:left_w].ljust(left_w))
             stdscr.attroff(curses.color_pair(1))
 
             stdscr.attron(curses.color_pair(2))
-            stdscr.addstr(0, mid + 1, right_title[:right_w].ljust(right_w))
+            stdscr.addstr(0, col1 + 1, mid_title[:mid_w].ljust(mid_w))
             stdscr.attroff(curses.color_pair(2))
 
-            # ---- vertical separator ----
+            stdscr.attron(curses.color_pair(5))
+            stdscr.addstr(0, col2 + 1, right_title[:right_w].ljust(right_w))
+            stdscr.attroff(curses.color_pair(5))
+
+            # ---- vertical separators ----
             stdscr.attron(curses.color_pair(4))
             for row in range(height):
                 try:
-                    stdscr.addch(row, mid, curses.ACS_VLINE)
+                    stdscr.addch(row, col1, curses.ACS_VLINE)
+                except curses.error:
+                    pass
+                try:
+                    stdscr.addch(row, col2, curses.ACS_VLINE)
                 except curses.error:
                     pass
             stdscr.attroff(curses.color_pair(4))
@@ -181,15 +229,11 @@ class SplitTerminal:
             content_bottom = height - 2  # reserve last line for input
             content_h = content_bottom - content_top
 
-            # Left pane content
-            left_lines = self.left_buf.get_lines()
-            self._draw_pane(stdscr, left_lines, content_top, 0, content_h, left_w)
+            self._draw_pane(stdscr, self.left_buf.get_lines(), content_top, 0, content_h, left_w)
+            self._draw_pane(stdscr, self.mid_buf.get_lines(), content_top, col1 + 1, content_h, mid_w)
+            self._draw_pane(stdscr, self.right_buf.get_lines(), content_top, col2 + 1, content_h, right_w)
 
-            # Right pane content
-            right_lines = self.right_buf.get_lines()
-            self._draw_pane(stdscr, right_lines, content_top, mid + 1, content_h, right_w)
-
-            # ---- input line ----
+            # ---- input line (spans left pane) ----
             prompt = "[You] > "
             input_row = height - 1
             stdscr.attron(curses.color_pair(3))
@@ -199,7 +243,6 @@ class SplitTerminal:
                 pass
             stdscr.attroff(curses.color_pair(3))
 
-            # Show input text (scroll if longer than available width)
             avail = left_w - len(prompt)
             visible = self.input_line[-avail:] if len(self.input_line) > avail else self.input_line
             try:
@@ -207,7 +250,6 @@ class SplitTerminal:
             except curses.error:
                 pass
 
-            # Position cursor
             cursor_x = min(len(prompt) + len(visible), left_w - 1)
             try:
                 stdscr.move(input_row, cursor_x)
@@ -221,7 +263,6 @@ class SplitTerminal:
     def _draw_pane(self, stdscr, lines: list, top: int, left: int,
                    height: int, width: int):
         """Draw wrapped text lines in a pane region, auto-scrolled to bottom."""
-        # Wrap lines to pane width
         wrapped = []
         for line in lines:
             if not line:
@@ -229,7 +270,6 @@ class SplitTerminal:
             else:
                 wrapped.extend(textwrap.wrap(line, width) or [""])
 
-        # Show last 'height' lines (auto-scroll)
         visible = wrapped[-height:] if len(wrapped) > height else wrapped
 
         for i, line in enumerate(visible):
@@ -292,6 +332,17 @@ class SplitTerminal:
         else:
             self._chat(user_input)
 
+    # ---------------------------------------------------------- helpers
+    def _resolve_target(self, args: str):
+        """Parse 'agent|critic [rest]' from args. Returns (target, remaining_args).
+        target is 'agent', 'critic', or 'both'. Defaults to 'both' if not specified."""
+        parts = args.strip().split(maxsplit=1)
+        if parts and parts[0].lower() in ("agent", "critic", "both"):
+            target = parts[0].lower()
+            rest = parts[1] if len(parts) > 1 else ""
+            return target, rest
+        return "both", args
+
     # ------------------------------------------------------------- commands
     def _out(self, text: str):
         """Write to the left pane."""
@@ -308,63 +359,143 @@ class SplitTerminal:
         tools_status = "ON" if self.ai.tools_enabled else "OFF"
         self._out(f"""
 Commands:
-  help            - Show this help
-  do <task>       - Execute task autonomously
-  chat <msg>      - Chat with AI
-  search <query>  - Web search
+  help              - Show this help
+  do <task>         - Execute task autonomously
+  chat <msg>        - Chat with AI
+  search <query>    - Web search
 
-Agent Control (right pane):
-  start           - Start autonomous agent
-  stop            - Stop autonomous agent
-  pause           - Pause autonomous agent
-  resume          - Resume autonomous agent
+Agent Control (use: <cmd> [agent|critic|both]):
+  stop [target]     - Stop agent/critic/both
+  start [target]    - Start agent/critic/both
+  pause [target]    - Pause agent/critic/both
+  resume [target]   - Resume agent/critic/both
+  agents            - Show status of both agents
+  instruct <target> <text> - Change instructions
 
 Task Management:
-  task <desc>     - Background task
-  tasks           - List tasks
-  status <id>     - Task status
-  cancel <id>     - Cancel task
-  schedule        - List/add scheduled tasks
+  task <desc>       - Background task
+  tasks             - List tasks
+  status <id>       - Task status
+  cancel <id>       - Cancel task
+  schedule          - List/add scheduled tasks
 
 Settings:
-  model <name>    - Switch model ({self.ai.current_model})
-  models          - List models
-  tools [on|off]  - Toggle tools ({tools_status})
-  reset           - Reset chat history
-  clear           - Clear left pane
-  quit/exit       - Exit""")
+  model <name>      - Switch model ({self.ai.current_model})
+  models            - List models
+  tools [on|off]    - Toggle tools ({tools_status})
+  reset             - Reset chat history
+  clear [target]    - Clear pane (left/agent/critic/all)
+  quit/exit         - Exit""")
+
+    def cmd_agents_status(self, args: str):
+        """Show status of both agents."""
+        if self.auto_agent:
+            a_status = "RUNNING" if self.auto_agent.is_running else (
+                "PAUSED" if self.auto_agent.is_paused else "STOPPED")
+            self._out(f"  Agent:  {a_status} | cycles: {self.auto_agent.cycle_count}")
+        else:
+            self._out("  Agent:  NOT CREATED")
+        if self.critic_agent:
+            c_status = "RUNNING" if self.critic_agent.is_running else (
+                "PAUSED" if self.critic_agent.is_paused else "STOPPED")
+            self._out(f"  Critic: {c_status} | reviews: {self.critic_agent.cycle_count}")
+        else:
+            self._out("  Critic: NOT CREATED")
 
     def cmd_stop_agent(self, args: str):
-        if self.auto_agent:
-            self.auto_agent.stop()
-            self._out("[System] Autonomous agent stopped.")
-        else:
-            self._out("[System] No autonomous agent running.")
+        target, _ = self._resolve_target(args)
+        if target in ("agent", "both"):
+            if self.auto_agent:
+                self.auto_agent.stop()
+                self._out("[System] Agent stopped.")
+            else:
+                self._out("[System] No agent running.")
+        if target in ("critic", "both"):
+            if self.critic_agent:
+                self.critic_agent.stop()
+                self._out("[System] Critic stopped.")
+            else:
+                self._out("[System] No critic running.")
 
     def cmd_start_agent(self, args: str):
-        if self.auto_agent and self.auto_agent.is_running:
-            self._out("[System] Autonomous agent is already running.")
-            return
-        self.right_buf.clear()
-        self._launch_auto_agent()
-        self._out("[System] Autonomous agent started.")
+        target, _ = self._resolve_target(args)
+        if target in ("agent", "both"):
+            if self.auto_agent and self.auto_agent.is_running:
+                self._out("[System] Agent already running.")
+            else:
+                self.mid_buf.clear()
+                self._launch_auto_agent()
+                self._out("[System] Agent started.")
+        if target in ("critic", "both"):
+            if self.critic_agent and self.critic_agent.is_running:
+                self._out("[System] Critic already running.")
+            else:
+                self.right_buf.clear()
+                self._launch_critic_agent()
+                self._out("[System] Critic started.")
 
     def cmd_pause_agent(self, args: str):
-        if self.auto_agent:
-            self.auto_agent.pause()
-            self._out("[System] Autonomous agent paused.")
-        else:
-            self._out("[System] No autonomous agent running.")
+        target, _ = self._resolve_target(args)
+        if target in ("agent", "both"):
+            if self.auto_agent:
+                self.auto_agent.pause()
+                self._out("[System] Agent paused.")
+            else:
+                self._out("[System] No agent running.")
+        if target in ("critic", "both"):
+            if self.critic_agent:
+                self.critic_agent.pause()
+                self._out("[System] Critic paused.")
+            else:
+                self._out("[System] No critic running.")
 
     def cmd_resume_agent(self, args: str):
-        if self.auto_agent:
-            self.auto_agent.resume()
-            self._out("[System] Autonomous agent resumed.")
-        else:
-            self._out("[System] No autonomous agent running.")
+        target, _ = self._resolve_target(args)
+        if target in ("agent", "both"):
+            if self.auto_agent:
+                self.auto_agent.resume()
+                self._out("[System] Agent resumed.")
+            else:
+                self._out("[System] No agent running.")
+        if target in ("critic", "both"):
+            if self.critic_agent:
+                self.critic_agent.resume()
+                self._out("[System] Critic resumed.")
+            else:
+                self._out("[System] No critic running.")
+
+    def cmd_instruct_agent(self, args: str):
+        target, rest = self._resolve_target(args)
+        if not rest:
+            # Show current instructions
+            if target in ("agent", "both") and self.auto_agent:
+                self._out(f"[Agent prompt] {self.auto_agent.get_instructions()[:200]}...")
+            if target in ("critic", "both") and self.critic_agent:
+                self._out(f"[Critic prompt] {self.critic_agent.get_instructions()[:200]}...")
+            return
+        if target in ("agent", "both"):
+            if self.auto_agent:
+                self.auto_agent.update_instructions(rest)
+                self._out("[System] Agent instructions updated.")
+        if target in ("critic", "both"):
+            if self.critic_agent:
+                self.critic_agent.update_instructions(rest)
+                self._out("[System] Critic instructions updated.")
 
     def cmd_clear(self, args: str):
-        self.left_buf.clear()
+        target = args.strip().lower() if args else "left"
+        if target in ("left", "control"):
+            self.left_buf.clear()
+        elif target == "agent":
+            self.mid_buf.clear()
+        elif target == "critic":
+            self.right_buf.clear()
+        elif target == "all":
+            self.left_buf.clear()
+            self.mid_buf.clear()
+            self.right_buf.clear()
+        else:
+            self.left_buf.clear()
 
     def cmd_search(self, args: str):
         if not args:
