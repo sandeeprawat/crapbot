@@ -1,12 +1,33 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-
-# Task data (generated at runtime)
-task_data/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+.venv/
 
 # Environment
 .env
-venv/
-.venv/
+*.env
+!.env.example
+
+# Data (task outputs, runtime state)
+data/
+outputs/
+
+# Empty dirs
+-p/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

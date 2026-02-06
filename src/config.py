@@ -3,7 +3,9 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv(r"C:\src\ai\.env")
+# Looks for .env in the project root (one level up from src/)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
 # Available Models Configuration
 MODELS = {
@@ -48,7 +50,6 @@ AZURE_AI_WUS_API_KEY = os.getenv("AZURE_AI_WUS_API_KEY")
 AZURE_AI_WUS_BING_RESOURCE_NAME = os.getenv("AZURE_AI_WUS_BING_RESOURCE_NAME")
 
 # Paths — everything the agent touches lives under DATA_DIR
-_PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
 DATA_DIR = os.path.abspath(os.path.join(_PROJECT_ROOT, "data"))
 TASK_DATA_DIR = os.path.join(DATA_DIR, "task_data")
 RUNTIME_TASKS_FILE = os.path.join(DATA_DIR, "runtime_tasks.json")
