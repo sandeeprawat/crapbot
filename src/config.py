@@ -3,9 +3,12 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-# Looks for .env in the project root (one level up from src/)
+# Try project root first, fall back to original location
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+_env_path = os.path.join(_PROJECT_ROOT, ".env")
+if not os.path.exists(_env_path):
+    _env_path = r"C:\src\ai\.env"
+load_dotenv(_env_path)
 
 # Available Models Configuration
 MODELS = {
