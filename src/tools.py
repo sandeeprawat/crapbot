@@ -7,14 +7,42 @@ import tempfile
 import shutil
 from typing import Any, Dict, List, Callable
 from datetime import datetime
+from config import DATA_DIR, AGENT_WORKSPACE
 
 
 # Tool registry
 TOOLS: Dict[str, Dict[str, Any]] = {}
 
-# Code execution workspace
-CODE_WORKSPACE = os.path.join(tempfile.gettempdir(), "crapbot_code")
+# Code execution workspace — inside the agent's data folder
+CODE_WORKSPACE = AGENT_WORKSPACE
 os.makedirs(CODE_WORKSPACE, exist_ok=True)
+
+
+def _is_inside_data_dir(path: str) -> bool:
+    """Check whether a resolved path is inside the agent's data folder."""
+    try:
+        resolved = os.path.realpath(os.path.abspath(path))
+        return resolved.startswith(os.path.realpath(DATA_DIR))
+    except Exception:
+        return False
+
+
+def _resolve_safe_path(path: str) -> str:
+    """Resolve a user-supplied path so it stays inside DATA_DIR.
+    
+    Relative paths are resolved relative to DATA_DIR.
+    Absolute paths are accepted only if they fall inside DATA_DIR.
+    """
+    if os.path.isabs(path):
+        resolved = os.path.realpath(path)
+    else:
+        resolved = os.path.realpath(os.path.join(DATA_DIR, path))
+    
+    if not resolved.startswith(os.path.realpath(DATA_DIR)):
+        raise PermissionError(
+            f"Access denied: path '{path}' is outside the agent's data folder ({DATA_DIR})"
+        )
+    return resolved
 
 
 def register_tool(name: str, description: str, parameters: dict, func: Callable):
@@ -106,8 +134,9 @@ def get_current_time(timezone: str = "UTC") -> dict:
 
 
 def read_file(path: str, max_lines: int = 100) -> dict:
-    """Read contents of a file."""
+    """Read contents of a file (must be inside data folder)."""
     try:
+        path = _resolve_safe_path(path)
         if not os.path.exists(path):
             return {"error": f"File not found: {path}"}
         
@@ -133,8 +162,10 @@ def read_file(path: str, max_lines: int = 100) -> dict:
 
 
 def write_file(path: str, content: str, mode: str = "write") -> dict:
-    """Write content to a file."""
+    """Write content to a file (must be inside data folder)."""
     try:
+        path = _resolve_safe_path(path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         file_mode = 'a' if mode == "append" else 'w'
         with open(path, file_mode, encoding='utf-8') as f:
             f.write(content)
@@ -144,14 +175,15 @@ def write_file(path: str, content: str, mode: str = "write") -> dict:
 
 
 def run_command(command: str, timeout: int = 60) -> dict:
-    """Run a shell command."""
+    """Run a shell command (working directory is agent's data folder)."""
     try:
         result = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=timeout
+            timeout=timeout,
+            cwd=DATA_DIR
         )
         return {
             "stdout": result.stdout[:5000] if len(result.stdout) > 5000 else result.stdout,
@@ -166,8 +198,9 @@ def run_command(command: str, timeout: int = 60) -> dict:
 
 
 def list_directory(path: str = ".") -> dict:
-    """List contents of a directory."""
+    """List contents of a directory (must be inside data folder)."""
     try:
+        path = _resolve_safe_path(path)
         if not os.path.exists(path):
             return {"error": f"Directory not found: {path}"}
         
@@ -228,6 +261,7 @@ def environment_info() -> dict:
             ["python", "--version"], 
             capture_output=True, text=True
         ).stdout.strip(),
+        "data_directory": DATA_DIR,
         "code_workspace": CODE_WORKSPACE
     }
 

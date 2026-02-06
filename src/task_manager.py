@@ -10,10 +10,11 @@ from datetime import datetime
 from typing import Callable, Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
+from config import TASK_DATA_DIR
 
 
-# Task storage paths
-TASK_BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "task_data")
+# Task storage paths — always under data/task_data/
+TASK_BASE_DIR = TASK_DATA_DIR
 TASK_HISTORY_FILE = os.path.join(TASK_BASE_DIR, "task_history.json")
 
 # Ensure base directory exists

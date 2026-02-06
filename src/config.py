@@ -47,6 +47,19 @@ AZURE_AI_WUS_PROJECT_ENDPOINT = os.getenv("AZURE_AI_WUS_PROJECT_ENDPOINT")
 AZURE_AI_WUS_API_KEY = os.getenv("AZURE_AI_WUS_API_KEY")
 AZURE_AI_WUS_BING_RESOURCE_NAME = os.getenv("AZURE_AI_WUS_BING_RESOURCE_NAME")
 
+# Paths — everything the agent touches lives under DATA_DIR
+_PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
+DATA_DIR = os.path.abspath(os.path.join(_PROJECT_ROOT, "data"))
+TASK_DATA_DIR = os.path.join(DATA_DIR, "task_data")
+RUNTIME_TASKS_FILE = os.path.join(DATA_DIR, "runtime_tasks.json")
+AGENT_WORKSPACE = os.path.join(DATA_DIR, "workspace")
+OUTPUTS_DIR = os.path.join(DATA_DIR, "outputs")
+DEFAULT_TASKS_FILE = os.path.abspath(os.path.join(_PROJECT_ROOT, "default_tasks.json"))
+
+# Ensure data directories exist
+for _d in [DATA_DIR, TASK_DATA_DIR, AGENT_WORKSPACE, OUTPUTS_DIR]:
+    os.makedirs(_d, exist_ok=True)
+
 # Agent settings
 AGENT_NAME = "CrapBot"
 MAX_RETRIES = 3

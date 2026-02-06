@@ -4,6 +4,7 @@ import sys
 import time
 from task_manager import get_task_manager, list_task_folders
 from terminal import Terminal
+from split_terminal import SplitTerminal
 from autonomous_tasks import get_configured_tasks
 from config import AGENT_NAME
 
@@ -11,8 +12,9 @@ from config import AGENT_NAME
 class Agent:
     """The main AI Agent that runs forever."""
     
-    def __init__(self):
-        self.terminal = Terminal()
+    def __init__(self, split_screen: bool = True):
+        self.split_screen = split_screen
+        self.terminal = None
         self.task_manager = get_task_manager()
         self.running = False
         
@@ -41,6 +43,10 @@ class Agent:
         
         # Start the terminal (this blocks)
         try:
+            if self.split_screen:
+                self.terminal = SplitTerminal()
+            else:
+                self.terminal = Terminal()
             self.terminal.start()
         except Exception as e:
             print(f"[Agent] Terminal error: {e}")
@@ -55,7 +61,8 @@ class Agent:
         self.running = False
         print("\n[Agent] Shutting down...")
         
-        self.terminal.stop()
+        if self.terminal:
+            self.terminal.stop()
         self.task_manager.stop()
         
         print("[Agent] Goodbye!\n")
@@ -83,7 +90,8 @@ class Agent:
 
 def main():
     """Main entry point."""
-    agent = Agent()
+    split = "--classic" not in sys.argv
+    agent = Agent(split_screen=split)
     agent.start()
 
 

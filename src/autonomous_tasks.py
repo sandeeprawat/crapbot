@@ -6,41 +6,65 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from ai_client import get_ai_client
+from config import DEFAULT_TASKS_FILE, RUNTIME_TASKS_FILE
 
 
-# Task configuration file path
-TASKS_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "tasks_config.json")
+def _load_default_tasks() -> Dict[str, Any]:
+    """Load pre-defined (read-only) tasks from default_tasks.json."""
+    try:
+        if os.path.exists(DEFAULT_TASKS_FILE):
+            with open(DEFAULT_TASKS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[Tasks] Could not load default tasks: {e}")
+    return {"scheduled_tasks": []}
+
+
+def _load_runtime_tasks() -> List[Dict[str, Any]]:
+    """Load runtime-added tasks from data/runtime_tasks.json."""
+    try:
+        if os.path.exists(RUNTIME_TASKS_FILE):
+            with open(RUNTIME_TASKS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[Tasks] Could not load runtime tasks: {e}")
+    return []
+
+
+def _save_runtime_tasks(tasks: List[Dict[str, Any]]):
+    """Save runtime tasks to data/runtime_tasks.json (never touches default_tasks.json)."""
+    try:
+        with open(RUNTIME_TASKS_FILE, 'w') as f:
+            json.dump(tasks, f, indent=2)
+    except Exception as e:
+        print(f"[Tasks] Could not save runtime tasks: {e}")
 
 
 def load_tasks_config() -> Dict[str, Any]:
-    """Load tasks configuration from file."""
-    try:
-        if os.path.exists(TASKS_CONFIG_FILE):
-            with open(TASKS_CONFIG_FILE, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"[Tasks] Could not load config: {e}")
-    return {"scheduled_tasks": [], "custom_tasks": []}
-
-
-def save_tasks_config(config: Dict[str, Any]):
-    """Save tasks configuration to file."""
-    try:
-        with open(TASKS_CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=2)
-    except Exception as e:
-        print(f"[Tasks] Could not save config: {e}")
+    """Load merged view of default + runtime tasks (for reading)."""
+    default = _load_default_tasks()
+    runtime = _load_runtime_tasks()
+    return {
+        "scheduled_tasks": default.get("scheduled_tasks", []),
+        "custom_tasks": runtime,
+    }
 
 
 def add_scheduled_task(name: str, prompt: str, interval_seconds: int, 
                        use_history: bool = False, max_history: int = 10) -> bool:
-    """Add a new custom scheduled task to the configuration."""
-    config = load_tasks_config()
+    """Add a new runtime scheduled task (saved separately from defaults)."""
+    runtime_tasks = _load_runtime_tasks()
     
-    # Check if task with same name exists
-    for task in config.get("custom_tasks", []):
+    # Check if task with same name exists in runtime tasks
+    for task in runtime_tasks:
         if task["name"] == name:
             return False  # Already exists
+    
+    # Also reject if name collides with a default task
+    default = _load_default_tasks()
+    for task in default.get("scheduled_tasks", []):
+        if task["name"] == name:
+            return False
     
     new_task = {
         "name": name,
@@ -54,46 +78,47 @@ def add_scheduled_task(name: str, prompt: str, interval_seconds: int,
         "created_at": datetime.now().isoformat()
     }
     
-    if "custom_tasks" not in config:
-        config["custom_tasks"] = []
-    
-    config["custom_tasks"].append(new_task)
-    save_tasks_config(config)
+    runtime_tasks.append(new_task)
+    _save_runtime_tasks(runtime_tasks)
     return True
 
 
 def remove_scheduled_task(name: str) -> bool:
-    """Remove a scheduled task from configuration."""
-    config = load_tasks_config()
+    """Remove a runtime task. Default tasks cannot be removed."""
+    runtime_tasks = _load_runtime_tasks()
     
-    # Check in custom tasks
-    custom_tasks = config.get("custom_tasks", [])
-    for i, task in enumerate(custom_tasks):
+    for i, task in enumerate(runtime_tasks):
         if task["name"] == name:
-            custom_tasks.pop(i)
-            save_tasks_config(config)
+            runtime_tasks.pop(i)
+            _save_runtime_tasks(runtime_tasks)
             return True
     
-    # Check in scheduled tasks (disable instead of remove)
-    for task in config.get("scheduled_tasks", []):
+    # If it's a default task, inform that it can't be removed
+    default = _load_default_tasks()
+    for task in default.get("scheduled_tasks", []):
         if task["name"] == name:
-            task["enabled"] = False
-            save_tasks_config(config)
-            return True
+            print(f"[Tasks] '{name}' is a default task and cannot be removed.")
+            return False
     
     return False
 
 
 def update_task_schedule(name: str, interval_seconds: int) -> bool:
-    """Update the schedule interval for a task."""
-    config = load_tasks_config()
+    """Update the schedule interval for a runtime task only."""
+    runtime_tasks = _load_runtime_tasks()
     
-    for task_list in [config.get("scheduled_tasks", []), config.get("custom_tasks", [])]:
-        for task in task_list:
-            if task["name"] == name:
-                task["interval_seconds"] = interval_seconds
-                save_tasks_config(config)
-                return True
+    for task in runtime_tasks:
+        if task["name"] == name:
+            task["interval_seconds"] = interval_seconds
+            _save_runtime_tasks(runtime_tasks)
+            return True
+    
+    # Default tasks are read-only
+    default = _load_default_tasks()
+    for task in default.get("scheduled_tasks", []):
+        if task["name"] == name:
+            print(f"[Tasks] '{name}' is a default task — schedule cannot be changed.")
+            return False
     
     return False
 

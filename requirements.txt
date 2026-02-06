@@ -4,3 +4,4 @@ python-dotenv
 aiohttp
 asyncio
 requests
+windows-curses;sys_platform=='win32'
