@@ -1,5 +1,7 @@
 # CrapBot - Autonomous AI Agent
 
+![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)
+
 An intelligent autonomous AI agent with background task management, autonomous code execution, and now featuring a **Deep Research System** with autonomous planning and critical review.
 
 ## Features
