@@ -427,9 +427,9 @@ Be thorough but concise. Format the answer in a professional, readable manner.""
             with open(state_file, 'w') as f:
                 json.dump(self.current_plan.to_dict(), f, indent=2)
         except (IOError, OSError, TypeError) as e:
-            # Silent failure for state saving - not critical to research
+            # Log but don't stop research - state saving is not critical
             # State is only for resumption, research continues without it
-            pass
+            self.on_output(f"[Debug] Could not save research state: {e}")
     
     def _save_research_results(self, results: Dict[str, Any]):
         """Save final research results to disk."""
