@@ -523,7 +523,7 @@ Be honest and constructive. Don't hold back on criticism if deserved."""
                     score = int(match.group(1))
                     if 1 <= score <= 10:
                         return score
-                except:
+                except (ValueError, IndexError, AttributeError):
                     pass
         
         return 5  # Default middle score
