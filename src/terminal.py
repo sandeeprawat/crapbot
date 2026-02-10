@@ -6,6 +6,7 @@ from ai_client import get_ai_client
 from task_manager import get_task_manager, list_task_folders
 from autonomous_tasks import add_scheduled_task, remove_scheduled_task, list_configured_tasks
 from tools import create_system_change_approval
+from deep_research_agent import run_deep_research
 
 
 SYSTEM_FIX_PLANNER_PROMPT = """You are a Windows troubleshooting planner.
@@ -65,6 +66,7 @@ class Terminal:
             "outputs": self.cmd_outputs,
             "cancel": self.cmd_cancel,
             "do": self.cmd_do,
+            "research": self.cmd_research,
             "quit": self.cmd_quit,
             "exit": self.cmd_quit,
         }
@@ -130,6 +132,7 @@ Available Commands:
     fix <issue>       - Diagnose and fix a Windows issue (asks before changes)
   chat <message>    - Chat with the AI (or just type your message)
   search <query>    - Search the web
+  research <problem> - Run deep research with autonomous planning and review
   
 Task Management:
   task <desc>       - Create a one-time background task
@@ -155,6 +158,14 @@ Task Output Storage:
 Autonomous Execution:
   Use 'do <task>' for complex tasks - the agent will write and execute
   code (Python, JS, PowerShell) autonomously to complete the task.
+
+Deep Research:
+  Use 'research <problem>' for thorough autonomous research with:
+  - Adaptive planning based on problem type
+  - Web search with Bing grounding
+  - Code analysis and data gathering
+  - Critical review and iteration
+  - Researcher-reviewer discussion for quality
         """
         print(help_text)
     
@@ -379,6 +390,46 @@ Autonomous Execution:
             f"Task: {args}\n\nComplete this task. If it requires computation, data processing, or any programming, write and execute the necessary code. Show the actual results.",
         )
         print(f"\n[CrapBot] {response}")
+    
+    def cmd_research(self, args: str):
+        """Run deep research with autonomous planning and critical review."""
+        if not args:
+            print("[Error] Please provide a research problem.")
+            print("\nExamples:")
+            print("  research Identify stocks that could make good returns in next few months")
+            print("  research Come up with a novel philosophical concept")
+            return
+        
+        print("\n[Deep Research] Starting autonomous research session...")
+        print("[Deep Research] This will involve planning, web search, analysis, and critical review.")
+        print("[Deep Research] The process may take several minutes.\n")
+        
+        try:
+            # Run the deep research
+            result = run_deep_research(problem=args, on_output=print)
+            
+            # Display summary
+            print("\n" + "="*80)
+            print("RESEARCH SUMMARY")
+            print("="*80)
+            print(f"Problem: {result['problem']}")
+            print(f"Attempts: {len(result['attempts'])}")
+            print(f"Final Score: {result['final_score']}/10")
+            print(f"Status: {'✓ Accepted' if result['final_accepted'] else '✗ Needs Improvement'}")
+            
+            # Show final answer from last attempt
+            last_attempt = result['attempts'][-1]
+            if 'research' in last_attempt and 'final_answer' in last_attempt['research']:
+                print("\nFINAL ANSWER:")
+                print("-" * 80)
+                print(last_attempt['research']['final_answer'])
+            
+            print("\n" + "="*80)
+            
+        except Exception as e:
+            print(f"\n[Error] Research failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     def cmd_fix(self, args: str):
         """Diagnose and fix a Windows issue with explicit approval."""

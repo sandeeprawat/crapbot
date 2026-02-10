@@ -15,6 +15,7 @@ from ai_client import get_ai_client
 from task_manager import get_task_manager, list_task_folders
 from autonomous_tasks import add_scheduled_task, remove_scheduled_task, list_configured_tasks
 from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox, _SESSION_FILE
+from deep_research_agent import run_deep_research
 from config import AGENT_NAME
 
 
@@ -87,6 +88,7 @@ class SplitTerminal:
             "outputs": self.cmd_outputs,
             "cancel": self.cmd_cancel,
             "do": self.cmd_do,
+            "research": self.cmd_research,
             "stop": self.cmd_stop_agent,
             "start": self.cmd_start_agent,
             "pause": self.cmd_pause_agent,
@@ -481,6 +483,7 @@ Commands:
   do <task>         - Execute task autonomously
   chat <msg>        - Chat with AI
   search <query>    - Web search
+  research <problem> - Deep research with planning & review
 
 Agent Control (use: <cmd> [agent|critic|both]):
   stop [target]     - Stop agent/critic/both
@@ -798,6 +801,39 @@ Settings:
                 f"Task: {args}\n\nComplete this task. If it requires code, write and execute it.",
             )
             self._out(f"[CrapBot] {response}")
+        threading.Thread(target=_bg, daemon=True).start()
+    
+    def cmd_research(self, args: str):
+        """Run deep research with autonomous planning and critical review."""
+        if not args:
+            self._out("[Error] Please provide a research problem.")
+            return
+        
+        self._out("[Deep Research] Starting research session...")
+        self._out("[Deep Research] This involves planning, search, analysis, and review.")
+        
+        def _bg():
+            try:
+                result = run_deep_research(problem=args, on_output=self._out)
+                
+                # Display summary
+                self._out("\n" + "="*60)
+                self._out("RESEARCH SUMMARY")
+                self._out("="*60)
+                self._out(f"Attempts: {len(result['attempts'])}")
+                self._out(f"Final Score: {result['final_score']}/10")
+                self._out(f"Status: {'✓ Accepted' if result['final_accepted'] else '✗ Needs Work'}")
+                
+                # Show final answer
+                last_attempt = result['attempts'][-1]
+                if 'research' in last_attempt and 'final_answer' in last_attempt['research']:
+                    self._out("\nFINAL ANSWER:")
+                    self._out("-" * 60)
+                    self._out(last_attempt['research']['final_answer'])
+                
+            except Exception as e:
+                self._out(f"[Error] Research failed: {e}")
+        
         threading.Thread(target=_bg, daemon=True).start()
 
     def cmd_quit(self, args: str):
