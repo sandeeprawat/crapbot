@@ -426,7 +426,9 @@ Be thorough but concise. Format the answer in a professional, readable manner.""
         try:
             with open(state_file, 'w') as f:
                 json.dump(self.current_plan.to_dict(), f, indent=2)
-        except Exception:
+        except (IOError, OSError, TypeError) as e:
+            # Silent failure for state saving - not critical to research
+            # State is only for resumption, research continues without it
             pass
     
     def _save_research_results(self, results: Dict[str, Any]):
@@ -436,7 +438,7 @@ Be thorough but concise. Format the answer in a professional, readable manner.""
             with open(results_file, 'w') as f:
                 json.dump(results, f, indent=2)
             self.on_output(f"\nResults saved to: {results_file}")
-        except Exception as e:
+        except (IOError, OSError, TypeError) as e:
             self.on_output(f"Warning: Could not save results: {e}")
 
 
