@@ -102,7 +102,8 @@ IMPORTANT:
 - Use tools proactively, not just when explicitly asked
 - If you're unsure, try it and see what happens"""
         
-    def chat(self, user_message: str, system_prompt: str = None, model: str = None, use_tools: bool = None) -> str:
+    def chat(self, user_message: str, system_prompt: str = None, model: str = None,
+             use_tools: bool = None, tool_allowlist: list = None) -> str:
         """Send a message and get a response, with optional tool calling."""
         model_name = model or self.current_model
         client = self._get_client(model_name)
@@ -126,6 +127,9 @@ IMPORTANT:
         
         # Get tool definitions if enabled
         tools = get_tool_definitions() if enable_tools else None
+        if tools and tool_allowlist:
+            allow = set(tool_allowlist)
+            tools = [t for t in tools if t.get("function", {}).get("name") in allow]
         
         for attempt in range(MAX_RETRIES):
             try:

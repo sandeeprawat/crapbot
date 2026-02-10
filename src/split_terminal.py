@@ -1,9 +1,9 @@
 """Split-screen terminal UI using curses.
 
-Three-pane layout:
-  Left pane:   interactive user input (commands / chat) — control panel
-  Middle pane: autonomous AI agent output (runs continuously)
-  Right pane:  critic AI agent output (reviews primary agent, provides feedback)
+Two-column layout:
+  Left pane:         interactive user input (commands / chat) — control panel
+  Right-top pane:    autonomous AI agent output (runs continuously)
+  Right-bottom pane: critic AI agent output (reviews primary agent, provides feedback)
 """
 import curses
 import threading
@@ -14,7 +14,7 @@ from datetime import datetime
 from ai_client import get_ai_client
 from task_manager import get_task_manager, list_task_folders
 from autonomous_tasks import add_scheduled_task, remove_scheduled_task, list_configured_tasks
-from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox
+from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox, _SESSION_FILE
 from config import AGENT_NAME
 
 
@@ -44,18 +44,23 @@ class PaneBuffer:
 
 
 class SplitTerminal:
-    """Curses-based three-pane split-screen terminal."""
+    """Curses-based split-screen terminal: left control + right stacked agent/critic."""
 
     def __init__(self):
         self.ai = get_ai_client()
         self.tasks = get_task_manager()
         self.left_buf = PaneBuffer()
-        self.mid_buf = PaneBuffer()
-        self.right_buf = PaneBuffer()
+        self.agent_buf = PaneBuffer()   # right-top: autonomous agent
+        self.critic_buf = PaneBuffer()  # right-bottom: critic agent
         self.input_line = ""
         self.input_history: list = []
         self.input_hist_idx = -1
         self.running = False
+
+        # Scroll state for right panes (0 = pinned to bottom / auto-scroll)
+        self._agent_scroll = 0   # lines scrolled up from bottom
+        self._critic_scroll = 0
+        self._focused_pane = "agent"  # which right pane receives scroll keys
 
         # Inter-agent communication
         self.agent_to_critic = AgentMailbox()  # primary -> critic
@@ -87,6 +92,7 @@ class SplitTerminal:
             "pause": self.cmd_pause_agent,
             "resume": self.cmd_resume_agent,
             "instruct": self.cmd_instruct_agent,
+            "fresh": self.cmd_fresh_restart,
             "clear": self.cmd_clear,
             "agents": self.cmd_agents_status,
             "quit": self.cmd_quit,
@@ -124,10 +130,10 @@ class SplitTerminal:
         self.running = True
 
         # Welcome
-        self.left_buf.add(f"  {AGENT_NAME} - Three-Pane Mode")
+        self.left_buf.add(f"  {AGENT_NAME} - Split Screen Mode")
         self.left_buf.add("  Type 'help' for commands.")
-        self.left_buf.add("  Middle: autonomous agent")
-        self.left_buf.add("  Right:  critic agent")
+        self.left_buf.add("  Right-top:    autonomous agent")
+        self.left_buf.add("  Right-bottom: critic agent")
         self.left_buf.add("")
 
         # Start both agents
@@ -146,20 +152,20 @@ class SplitTerminal:
             self.critic_agent.stop()
 
     def _launch_auto_agent(self):
-        """Start the autonomous agent feeding into the middle pane."""
+        """Start the autonomous agent feeding into the right-top pane."""
         self.auto_agent = AutonomousAgent(
             cycle_delay=30,
-            on_output=lambda text: self.mid_buf.add(text),
+            on_output=lambda text: self.agent_buf.add(text),
             inbox=self.critic_to_agent,   # receives critic feedback
             outbox=self.agent_to_critic,  # sends output to critic
         )
         self.auto_agent.start()
 
     def _launch_critic_agent(self):
-        """Start the critic agent feeding into the right pane."""
+        """Start the critic agent feeding into the right-bottom pane."""
         self.critic_agent = CriticAgent(
             cycle_delay=5,
-            on_output=lambda text: self.right_buf.add(text),
+            on_output=lambda text: self.critic_buf.add(text),
             inbox=self.agent_to_critic,   # reads primary agent output
             outbox=self.critic_to_agent,  # sends feedback to primary
         )
@@ -169,18 +175,24 @@ class SplitTerminal:
     def _draw(self, stdscr):
         try:
             height, width = stdscr.getmaxyx()
-            if height < 6 or width < 60:
+            if height < 8 or width < 60:
                 stdscr.clear()
-                stdscr.addstr(0, 0, "Terminal too small! Need 60+ cols.")
+                stdscr.addstr(0, 0, "Terminal too small! Need 60+ cols, 8+ rows.")
                 stdscr.refresh()
                 return
 
-            # Three columns: left (control), middle (agent), right (critic)
-            col1 = width // 3
-            col2 = col1 * 2
-            left_w = col1 - 1
-            mid_w = col2 - col1 - 1
-            right_w = width - col2 - 1
+            # Two columns: left (control) | right (agent top / critic bottom)
+            mid_col = width // 2
+            left_w = mid_col - 1
+            right_w = width - mid_col - 1
+
+            # Right pane split: top half = agent, bottom half = critic
+            content_top = 1
+            content_bottom = height - 2  # reserve last row for input
+            content_h = content_bottom - content_top
+            right_top_h = content_h // 2
+            right_bot_h = content_h - right_top_h
+            right_split_row = content_top + right_top_h  # horizontal divider row
 
             stdscr.erase()
 
@@ -191,47 +203,69 @@ class SplitTerminal:
                 "PAUSE" if (self.auto_agent and self.auto_agent.is_paused) else "STOP"
             )
             agent_cycle = self.auto_agent.cycle_count if self.auto_agent else 0
-            mid_title = f" Agent [{agent_status}] #{agent_cycle} "
+            agent_title = f" Agent [{agent_status}] #{agent_cycle} "
 
             critic_status = "RUN" if (self.critic_agent and self.critic_agent.is_running) else (
                 "PAUSE" if (self.critic_agent and self.critic_agent.is_paused) else "STOP"
             )
             critic_cycle = self.critic_agent.cycle_count if self.critic_agent else 0
-            right_title = f" Critic [{critic_status}] #{critic_cycle} "
+            critic_title = f" Critic [{critic_status}] #{critic_cycle} "
 
+            # Left header
             stdscr.attron(curses.color_pair(1))
             stdscr.addstr(0, 0, left_title[:left_w].ljust(left_w))
             stdscr.attroff(curses.color_pair(1))
 
+            # Agent header (right-top)
+            focus_agent = "*" if self._focused_pane == "agent" else " "
             stdscr.attron(curses.color_pair(2))
-            stdscr.addstr(0, col1 + 1, mid_title[:mid_w].ljust(mid_w))
+            stdscr.addstr(0, mid_col + 1, f"{focus_agent}{agent_title}"[:right_w].ljust(right_w))
             stdscr.attroff(curses.color_pair(2))
 
-            stdscr.attron(curses.color_pair(5))
-            stdscr.addstr(0, col2 + 1, right_title[:right_w].ljust(right_w))
-            stdscr.attroff(curses.color_pair(5))
-
-            # ---- vertical separators ----
+            # ---- vertical separator ----
             stdscr.attron(curses.color_pair(4))
             for row in range(height):
                 try:
-                    stdscr.addch(row, col1, curses.ACS_VLINE)
-                except curses.error:
-                    pass
-                try:
-                    stdscr.addch(row, col2, curses.ACS_VLINE)
+                    stdscr.addch(row, mid_col, curses.ACS_VLINE)
                 except curses.error:
                     pass
             stdscr.attroff(curses.color_pair(4))
 
-            # ---- content areas ----
-            content_top = 1
-            content_bottom = height - 2  # reserve last line for input
-            content_h = content_bottom - content_top
+            # ---- horizontal separator in right pane (between agent & critic) ----
+            stdscr.attron(curses.color_pair(4))
+            for col in range(mid_col + 1, width):
+                try:
+                    stdscr.addch(right_split_row, col, curses.ACS_HLINE)
+                except curses.error:
+                    pass
+            # Draw intersection where vertical meets horizontal
+            try:
+                stdscr.addch(right_split_row, mid_col, curses.ACS_LTEE)
+            except curses.error:
+                pass
+            stdscr.attroff(curses.color_pair(4))
 
-            self._draw_pane(stdscr, self.left_buf.get_lines(), content_top, 0, content_h, left_w)
-            self._draw_pane(stdscr, self.mid_buf.get_lines(), content_top, col1 + 1, content_h, mid_w)
-            self._draw_pane(stdscr, self.right_buf.get_lines(), content_top, col2 + 1, content_h, right_w)
+            # Critic header (on the horizontal divider line, right side)
+            focus_critic = "*" if self._focused_pane == "critic" else " "
+            stdscr.attron(curses.color_pair(5))
+            try:
+                stdscr.addstr(right_split_row, mid_col + 1, f"{focus_critic}{critic_title}"[:right_w])
+            except curses.error:
+                pass
+            stdscr.attroff(curses.color_pair(5))
+
+            # ---- content areas ----
+            # Left pane: full height
+            self._draw_pane(stdscr, self.left_buf.get_lines(),
+                            content_top, 0, content_h, left_w)
+            # Right-top: agent output (with scroll offset & scrollbar)
+            self._draw_pane_scrollable(stdscr, self.agent_buf.get_lines(),
+                            content_top, mid_col + 1, right_top_h, right_w,
+                            self._agent_scroll)
+            # Right-bottom: critic output (with scroll offset & scrollbar)
+            self._draw_pane_scrollable(stdscr, self.critic_buf.get_lines(),
+                            right_split_row + 1, mid_col + 1, right_bot_h - 1, right_w,
+                            self._critic_scroll)
 
             # ---- input line (spans left pane) ----
             prompt = "[You] > "
@@ -281,6 +315,68 @@ class SplitTerminal:
             except curses.error:
                 pass
 
+    def _draw_pane_scrollable(self, stdscr, lines: list, top: int, left: int,
+                              height: int, width: int, scroll_offset: int):
+        """Draw wrapped text with scroll offset and a scrollbar track."""
+        # Reserve 1 col for scrollbar
+        text_w = max(width - 1, 1)
+        sb_col = left + text_w
+
+        # Wrap all lines to text width
+        wrapped = []
+        for line in lines:
+            if not line:
+                wrapped.append("")
+            else:
+                wrapped.extend(textwrap.wrap(line, text_w) or [""])
+
+        total = len(wrapped)
+
+        # Clamp scroll offset
+        max_scroll = max(0, total - height)
+        offset = min(scroll_offset, max_scroll)
+
+        # Compute visible window
+        if total <= height:
+            visible = wrapped
+        else:
+            end = total - offset
+            start = max(0, end - height)
+            visible = wrapped[start:end]
+
+        # Draw text lines
+        for i, line in enumerate(visible):
+            row = top + (height - len(visible)) + i
+            if row < top or row >= top + height:
+                continue
+            try:
+                stdscr.addnstr(row, left, line, text_w)
+            except curses.error:
+                pass
+
+        # Draw scrollbar
+        if total > height and height > 1:
+            # Scrollbar thumb position
+            thumb_size = max(1, height * height // total)
+            # Position: 0 offset = thumb at bottom, max_scroll offset = thumb at top
+            if max_scroll > 0:
+                thumb_top = top + int((max_scroll - offset) / max_scroll * (height - thumb_size))
+            else:
+                thumb_top = top + height - thumb_size
+
+            for row in range(top, top + height):
+                ch = curses.ACS_CKBOARD if thumb_top <= row < thumb_top + thumb_size else curses.ACS_VLINE
+                try:
+                    stdscr.addch(row, sb_col, ch)
+                except curses.error:
+                    pass
+            # Show scroll indicator if not at bottom
+            if offset > 0:
+                try:
+                    stdscr.addch(top + height - 1, sb_col, ord('v'))
+                except curses.error:
+                    pass
+
     # --------------------------------------------------------------- input
     def _handle_input(self, stdscr):
         try:
@@ -306,6 +402,28 @@ class SplitTerminal:
                     self.input_line = ""
                 else:
                     self.input_line = self.input_history[self.input_hist_idx]
+        elif ch == 9:  # Tab — switch focused right pane
+            self._focused_pane = "critic" if self._focused_pane == "agent" else "agent"
+        elif ch == curses.KEY_PPAGE:  # Page Up — scroll focused pane up
+            if self._focused_pane == "agent":
+                self._agent_scroll += 5
+            else:
+                self._critic_scroll += 5
+        elif ch == curses.KEY_NPAGE:  # Page Down — scroll focused pane down
+            if self._focused_pane == "agent":
+                self._agent_scroll = max(0, self._agent_scroll - 5)
+            else:
+                self._critic_scroll = max(0, self._critic_scroll - 5)
+        elif ch == curses.KEY_END:  # End — snap to bottom (auto-follow)
+            if self._focused_pane == "agent":
+                self._agent_scroll = 0
+            else:
+                self._critic_scroll = 0
+        elif ch == curses.KEY_HOME:  # Home — scroll to top
+            if self._focused_pane == "agent":
+                self._agent_scroll = MAX_BUFFER_LINES
+            else:
+                self._critic_scroll = MAX_BUFFER_LINES
         elif ch == 3:  # Ctrl+C
             self.cmd_quit("")
         elif 32 <= ch <= 126:
@@ -369,6 +487,7 @@ Agent Control (use: <cmd> [agent|critic|both]):
   start [target]    - Start agent/critic/both
   pause [target]    - Pause agent/critic/both
   resume [target]   - Resume agent/critic/both
+  fresh             - Clear session & restart both agents
   agents            - Show status of both agents
   instruct <target> <text> - Change instructions
 
@@ -423,14 +542,14 @@ Settings:
             if self.auto_agent and self.auto_agent.is_running:
                 self._out("[System] Agent already running.")
             else:
-                self.mid_buf.clear()
+                self.agent_buf.clear()
                 self._launch_auto_agent()
                 self._out("[System] Agent started.")
         if target in ("critic", "both"):
             if self.critic_agent and self.critic_agent.is_running:
                 self._out("[System] Critic already running.")
             else:
-                self.right_buf.clear()
+                self.critic_buf.clear()
                 self._launch_critic_agent()
                 self._out("[System] Critic started.")
 
@@ -487,13 +606,13 @@ Settings:
         if target in ("left", "control"):
             self.left_buf.clear()
         elif target == "agent":
-            self.mid_buf.clear()
+            self.agent_buf.clear()
         elif target == "critic":
-            self.right_buf.clear()
+            self.critic_buf.clear()
         elif target == "all":
             self.left_buf.clear()
-            self.mid_buf.clear()
-            self.right_buf.clear()
+            self.agent_buf.clear()
+            self.critic_buf.clear()
         else:
             self.left_buf.clear()
 
@@ -546,6 +665,37 @@ Settings:
     def cmd_reset(self, args: str):
         self.ai.reset_conversation()
         self._out("[System] Conversation history cleared.")
+
+    def cmd_fresh_restart(self, args: str):
+        """Clear last session data and restart both agents fresh."""
+        import os
+        self._out("[System] Stopping both agents...")
+        if self.auto_agent:
+            # Stop without saving session (we want to discard it)
+            self.auto_agent._running = False
+            if self.auto_agent._thread:
+                self.auto_agent._thread.join(timeout=5)
+                self.auto_agent._thread = None
+        if self.critic_agent:
+            self.critic_agent.stop()
+
+        # Delete last session file
+        if os.path.exists(_SESSION_FILE):
+            os.remove(_SESSION_FILE)
+            self._out("[System] Last session data cleared.")
+        else:
+            self._out("[System] No session data to clear.")
+
+        # Clear pane buffers and scroll state
+        self.agent_buf.clear()
+        self.critic_buf.clear()
+        self._agent_scroll = 0
+        self._critic_scroll = 0
+
+        # Restart both agents (they will load instructions from instructions.json)
+        self._launch_auto_agent()
+        self._launch_critic_agent()
+        self._out("[System] Both agents restarted fresh with current instructions.")
 
     def cmd_task(self, args: str):
         if not args:

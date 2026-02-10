@@ -1,9 +1,44 @@
 """Terminal interface for the AI Agent."""
 import sys
 import threading
+import json
 from ai_client import get_ai_client
 from task_manager import get_task_manager, list_task_folders
 from autonomous_tasks import add_scheduled_task, remove_scheduled_task, list_configured_tasks
+from tools import create_system_change_approval
+
+
+SYSTEM_FIX_PLANNER_PROMPT = """You are a Windows troubleshooting planner.
+Analyze the user's issue and propose a safe, step-by-step fix plan.
+Return ONLY valid JSON with this schema:
+{
+    "summary": "short description",
+    "diagnostics": ["PowerShell command", ...],
+    "fixes": [
+        {
+            "title": "short name",
+            "risk": "low|medium|high",
+            "requires_admin": true|false,
+            "commands": ["PowerShell command", ...],
+            "rollback": "optional rollback steps"
+        }
+    ]
+}
+Rules:
+- Keep commands Windows PowerShell compatible.
+- Prefer diagnostics first, fixes second.
+- Avoid destructive actions; if unavoidable, mark risk=high.
+"""
+
+
+SYSTEM_FIX_EXECUTOR_PROMPT = """You are executing an approved Windows fix plan.
+You must:
+- Use ONLY the run_powershell_guarded tool for any command execution.
+- Use the provided approval_id for every command.
+- Run diagnostics first, then fixes in order.
+- Stop if a command fails and report the error.
+- Summarize results and next steps.
+"""
 
 
 class Terminal:
@@ -21,6 +56,7 @@ class Terminal:
             "models": self.cmd_models,
             "tools": self.cmd_tools,
             "reset": self.cmd_reset,
+            "fix": self.cmd_fix,
             "task": self.cmd_task,
             "tasks": self.cmd_list_tasks,
             "schedule": self.cmd_schedule,
@@ -91,6 +127,7 @@ class Terminal:
 Available Commands:
   help              - Show this help
   do <task>         - Execute task autonomously (writes & runs code if needed)
+    fix <issue>       - Diagnose and fix a Windows issue (asks before changes)
   chat <message>    - Chat with the AI (or just type your message)
   search <query>    - Search the web
   
@@ -340,6 +377,74 @@ Autonomous Execution:
         print("\n[CrapBot] Working on it (may write and execute code)...")
         response = self.ai.chat(
             f"Task: {args}\n\nComplete this task. If it requires computation, data processing, or any programming, write and execute the necessary code. Show the actual results.",
+        )
+        print(f"\n[CrapBot] {response}")
+
+    def cmd_fix(self, args: str):
+        """Diagnose and fix a Windows issue with explicit approval."""
+        if not args:
+            print("[Error] Please describe the issue to fix.")
+            return
+
+        print("\n[CrapBot] Planning a fix... (no changes yet)")
+        plan_text = self.ai.chat(
+            args,
+            system_prompt=SYSTEM_FIX_PLANNER_PROMPT,
+            use_tools=False,
+        )
+
+        try:
+            plan = json.loads(plan_text)
+        except json.JSONDecodeError:
+            print("[Error] Planner did not return valid JSON. Showing raw response:\n")
+            print(plan_text)
+            return
+
+        summary = plan.get("summary", "(no summary)")
+        diagnostics = plan.get("diagnostics", [])
+        fixes = plan.get("fixes", [])
+
+        print("\nProposed plan:")
+        print(f"  Summary: {summary}")
+        if diagnostics:
+            print("  Diagnostics:")
+            for cmd in diagnostics:
+                print(f"    - {cmd}")
+        if fixes:
+            print("  Fixes:")
+            for i, fix in enumerate(fixes, 1):
+                title = fix.get("title", f"Fix {i}")
+                risk = fix.get("risk", "unknown")
+                admin = "admin" if fix.get("requires_admin") else "user"
+                print(f"    {i}. {title} (risk: {risk}, {admin})")
+                for cmd in fix.get("commands", []):
+                    print(f"       - {cmd}")
+                if fix.get("rollback"):
+                    print(f"       rollback: {fix['rollback']}")
+
+        confirm = input("\nRun this plan now? (y/N): ").strip().lower()
+        if confirm != "y":
+            print("[System] Cancelled. No changes made.")
+            return
+
+        approval_id = create_system_change_approval(
+            reason=f"Fix issue: {args}",
+            duration_seconds=900,
+            approved_by="terminal",
+        )
+
+        print("\n[CrapBot] Executing plan with approval...\n")
+        executor_input = json.dumps({
+            "issue": args,
+            "approval_id": approval_id,
+            "plan": plan,
+        })
+
+        response = self.ai.chat(
+            executor_input,
+            system_prompt=SYSTEM_FIX_EXECUTOR_PROMPT,
+            use_tools=True,
+            tool_allowlist=["run_powershell_guarded"],
         )
         print(f"\n[CrapBot] {response}")
             

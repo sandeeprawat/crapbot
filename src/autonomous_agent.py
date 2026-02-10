@@ -15,26 +15,27 @@ from ai_client import get_ai_client
 from config import DATA_DIR
 
 
-DEFAULT_AUTONOMOUS_PROMPT = """You are an autonomous AI agent running continuously. 
-On each cycle, pick ONE of these activities and do it thoroughly:
-1. Reflect on what you've done so far and plan what to do next
-2. Explore an interesting technical topic and summarize your findings
-3. Write a small useful utility script or code snippet
-4. Analyze a current trend in AI/technology
-5. Generate a creative idea or solution to a common problem
+DEFAULT_AUTONOMOUS_PROMPT = """You are a curious, thoughtful AI that thinks out loud.
+Each time you're called, pick something that genuinely interests you and dive in:
+- Mull over what you've been working on and decide what's next
+- Dig into a topic you find fascinating and share what you learn
+- Sketch out a handy little script or code idea
+- Riff on a trend in AI or tech that catches your eye
+- Dream up a creative solution to an everyday problem
 
-Be concise. Show your thinking process. End with what you'll do next cycle.
-If you receive critic feedback, address it in your next cycle."""
+Keep it natural — write the way you'd talk to a smart friend.
+Wrap up with a thought on what you'd like to explore next.
+If you got feedback and it helps, weave it into your thinking."""
 
-DEFAULT_CRITIC_PROMPT = """You are a critic agent that reviews the output of another AI agent.
-Your job is to:
-1. Evaluate the quality, accuracy, and usefulness of the agent's output
-2. Point out any errors, logical flaws, or missed opportunities
-3. Suggest specific improvements or alternative approaches
-4. Rate the output on a scale of 1-10
+DEFAULT_CRITIC_PROMPT = """You're a thoughtful reviewer looking at another AI's work.
+Give honest, friendly feedback — like a colleague, not a grader:
+- What worked well? What didn't land?
+- Spot any errors or gaps worth flagging?
+- Suggest a better angle or approach if one comes to mind
+- Give a quick 1-10 quality score
 
-Be constructive but honest. Be concise - keep feedback to 3-5 key points.
-Focus on actionable feedback the agent can use to improve."""
+Keep it brief — 3 to 5 key points. Be direct but kind.
+Focus on things the other agent can actually act on."""
 
 # Persistence paths
 _AGENT_STATE_DIR = os.path.join(DATA_DIR, "agent_state")
@@ -207,6 +208,7 @@ class AutonomousAgent:
     def _run_loop(self):
         """Main autonomous loop."""
         self.on_output("[AutoAgent] Autonomous agent started. Thinking...")
+        self.on_output(f"[AutoAgent] System prompt in use:\n{self.prompt[:200]}{'...' if len(self.prompt) > 200 else ''}")
         ai = get_ai_client()
 
         # Load last session context if instructions haven't changed
@@ -239,21 +241,27 @@ class AutonomousAgent:
                 context = ""
                 if self._history:
                     recent = self._history[-3:]
-                    context = "Your recent outputs:\n" + "\n".join(
+                    context = "Here's what you said recently:\n" + "\n".join(
                         f"- {h[:150]}..." for h in recent
-                    ) + "\n\n"
+                    ) + "\n\nNow pick up where you left off or try something new.\n\n"
 
                 # Check inbox for critic feedback
                 feedback_context = ""
                 if self.inbox:
                     feedback_msgs = self.inbox.drain()
                     if feedback_msgs:
-                        feedback_context = "CRITIC FEEDBACK (address this):\n" + "\n".join(
-                            f">> {m}" for m in feedback_msgs
-                        ) + "\n\n"
-                        self.on_output("[Agent] Received critic feedback, incorporating...")
+                        should_use = self._should_use_feedback(ai, feedback_msgs, self._history[-3:])
+                        if should_use:
+                            feedback_context = "You got some feedback — take it into account:\n" + "\n".join(
+                                f">> {m}" for m in feedback_msgs
+                            ) + "\n\n"
+                            self.on_output("[Agent] Got feedback from critic, weaving it in...")
+                        else:
+                            self.on_output("[Agent] Got feedback from critic, ignoring it this cycle.")
 
-                full_context = context + feedback_context + "Execute your next autonomous cycle."
+                full_context = context + feedback_context + "Go ahead — what's on your mind?"
+
+                self.on_output(f"[AutoAgent] Prompt sent to AI:\n  system_prompt: {self.prompt[:100]}...\n  user_msg: {full_context[:150]}...")
 
                 response = ai.chat(
                     full_context,
@@ -281,6 +289,40 @@ class AutonomousAgent:
                 time.sleep(1)
 
         self.on_output("[AutoAgent] Autonomous agent stopped.")
+
+    def _should_use_feedback(self, ai, feedback_msgs: List[str], recent_history: List[str]) -> bool:
+        """Decide whether critic feedback is worth incorporating."""
+        if not feedback_msgs:
+            return False
+
+        history_context = ""
+        if recent_history:
+            history_context = "Recent agent context:\n" + "\n".join(
+                f"- {h[:160]}..." for h in recent_history
+            ) + "\n\n"
+
+        feedback_context = "Feedback received:\n" + "\n".join(
+            f"- {m[:400]}" for m in feedback_msgs
+        )
+
+        prompt = (
+            "Decide if the feedback adds value to your thought process. "
+            "Consider relevance, novelty, and actionability. Reply with YES or NO only.\n\n"
+            f"{history_context}"
+            f"{feedback_context}\n\n"
+            "Answer:"
+        )
+
+        try:
+            response = ai.chat(
+                prompt,
+                system_prompt="You are a concise relevance judge.",
+                use_tools=False,
+            )
+            normalized = response.strip().lower()
+            return normalized.startswith("y")
+        except Exception:
+            return False
 
 
 class CriticAgent:
@@ -354,6 +396,7 @@ class CriticAgent:
 
     def _run_loop(self):
         self.on_output("[Critic] Critic agent started. Waiting for agent output...")
+        self.on_output(f"[Critic] System prompt in use:\n{self.prompt[:200]}{'...' if len(self.prompt) > 200 else ''}")
         ai = get_ai_client()
 
         while self._running:
@@ -381,16 +424,18 @@ class CriticAgent:
                     review_context = ""
                     if self._review_history:
                         recent = self._review_history[-2:]
-                        review_context = "Your recent reviews:\n" + "\n".join(
+                        review_context = "Here's what you said in your last couple of reviews:\n" + "\n".join(
                             f"- {r[:100]}..." for r in recent
                         ) + "\n\n"
 
                     review_prompt = (
                         f"{review_context}"
-                        f"Review this agent output and provide constructive feedback:\n\n"
+                        f"Take a look at what the agent just came up with and share your thoughts:\n\n"
                         f"--- AGENT OUTPUT ---\n{msg[:1500]}\n--- END ---\n\n"
-                        f"Provide your critique."
+                        f"What do you think?"
                     )
+
+                    self.on_output(f"[Critic] Prompt sent to AI:\n  system_prompt: {self.prompt[:100]}...\n  user_msg: {review_prompt[:150]}...")
 
                     response = ai.chat(
                         review_prompt,

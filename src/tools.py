@@ -5,6 +5,9 @@ import subprocess
 import os
 import tempfile
 import shutil
+import re
+import time
+import uuid
 from typing import Any, Dict, List, Callable
 from datetime import datetime
 from config import DATA_DIR, AGENT_WORKSPACE
@@ -16,6 +19,115 @@ TOOLS: Dict[str, Dict[str, Any]] = {}
 # Code execution workspace — inside the agent's data folder
 CODE_WORKSPACE = AGENT_WORKSPACE
 os.makedirs(CODE_WORKSPACE, exist_ok=True)
+
+# System-change approval storage
+_AGENT_STATE_DIR = os.path.join(DATA_DIR, "agent_state")
+_APPROVALS_FILE = os.path.join(_AGENT_STATE_DIR, "system_change_approvals.json")
+os.makedirs(_AGENT_STATE_DIR, exist_ok=True)
+
+
+def _load_approvals() -> Dict[str, dict]:
+    """Load approval tokens from disk."""
+    try:
+        if os.path.exists(_APPROVALS_FILE):
+            with open(_APPROVALS_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_approvals(approvals: Dict[str, dict]):
+    """Persist approval tokens to disk."""
+    with open(_APPROVALS_FILE, "w") as f:
+        json.dump(approvals, f, indent=2)
+
+
+def _purge_expired_approvals(approvals: Dict[str, dict]) -> Dict[str, dict]:
+    """Remove expired approvals."""
+    now = time.time()
+    return {k: v for k, v in approvals.items() if v.get("expires_at", 0) > now}
+
+
+def create_system_change_approval(reason: str, duration_seconds: int = 600,
+                                  approved_by: str = "user") -> str:
+    """Create a short-lived approval token for system changes."""
+    approvals = _load_approvals()
+    approvals = _purge_expired_approvals(approvals)
+
+    approval_id = str(uuid.uuid4())
+    approvals[approval_id] = {
+        "reason": reason,
+        "approved_by": approved_by,
+        "created_at": datetime.now().isoformat(),
+        "expires_at": time.time() + max(30, int(duration_seconds)),
+    }
+    _save_approvals(approvals)
+    return approval_id
+
+
+def _validate_approval(approval_id: str) -> Dict[str, Any]:
+    """Validate a system-change approval token."""
+    approvals = _purge_expired_approvals(_load_approvals())
+    _save_approvals(approvals)
+
+    if not approval_id or approval_id not in approvals:
+        return {"valid": False, "error": "System change approval is missing or expired."}
+
+    return {"valid": True, "approval": approvals[approval_id]}
+
+
+def _is_dangerous_powershell(command: str) -> bool:
+    """Heuristic check for destructive PowerShell operations."""
+    cmd = command.lower()
+    patterns = [
+        r"\bremove-item\b.*(-recurse|-force)",
+        r"\bformat-volume\b",
+        r"\bclear-disk\b",
+        r"\binitialize-disk\b",
+        r"\bdiskpart\b",
+        r"\bbcdedit\b",
+        r"\breg\s+delete\b",
+        r"\breg\s+add\b",
+        r"\bshutdown\b",
+        r"\brestart-computer\b",
+        r"\bstop-computer\b",
+    ]
+    return any(re.search(p, cmd) for p in patterns)
+
+
+def run_powershell_guarded(command: str, approval_id: str,
+                           timeout: int = 120, allow_dangerous: bool = False) -> dict:
+    """Run PowerShell with a valid approval token and safety checks."""
+    approval = _validate_approval(approval_id)
+    if not approval.get("valid"):
+        return {"success": False, "error": approval.get("error"), "needs_approval": True}
+
+    if _is_dangerous_powershell(command) and not allow_dangerous:
+        return {
+            "success": False,
+            "error": "Command flagged as dangerous. Set allow_dangerous=true only with explicit user approval.",
+            "requires_explicit_approval": True,
+        }
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=DATA_DIR,
+        )
+        return {
+            "stdout": result.stdout[:10000] if result.stdout else "",
+            "stderr": result.stderr[:5000] if result.stderr else "",
+            "exit_code": result.returncode,
+            "success": result.returncode == 0,
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "Command timed out", "success": False}
+    except Exception as e:
+        return {"error": str(e), "success": False}
 
 
 def _is_inside_data_dir(path: str) -> bool:
@@ -906,6 +1018,34 @@ register_tool(
         "required": ["code"]
     },
     func=execute_powershell
+)
+
+register_tool(
+    name="run_powershell_guarded",
+    description="Run a PowerShell command with a short-lived approval token and safety checks.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "PowerShell command to execute"
+            },
+            "approval_id": {
+                "type": "string",
+                "description": "Short-lived approval token issued by the user"
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds (default 120)"
+            },
+            "allow_dangerous": {
+                "type": "boolean",
+                "description": "Allow potentially destructive commands (requires explicit user approval)"
+            }
+        },
+        "required": ["command", "approval_id"]
+    },
+    func=run_powershell_guarded
 )
 
 register_tool(
