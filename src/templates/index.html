@@ -168,6 +168,7 @@
 
 <script>
 const API = "";
+const AGENT_NAME = "{{ agent_name }}";
 let toolsOn = true;
 let sessionPollTimer = null;
 let modalPollTimer = null;
@@ -243,7 +244,7 @@ async function resetConversation() {
 function appendMsg(role, text) {
   const div = document.createElement("div");
   div.className = "msg " + role;
-  const label = role === "user" ? "You" : role === "system" ? "System" : "CrapBot";
+  const label = role === "user" ? "You" : role === "system" ? "System" : AGENT_NAME;
   // Escape HTML to prevent XSS
   const escaped = text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   div.innerHTML = `<span class="label">[${label}]</span><pre>${escaped}</pre>`;
@@ -339,22 +340,34 @@ async function stopSession(id) {
 
 async function viewSession(id) {
   viewingSessionId = id;
+  modalOutputOffset = 0;
+  document.getElementById("modalBody").innerHTML = "";
   document.getElementById("outputModal").classList.add("active");
   document.getElementById("modalTitle").textContent = "Session: " + id;
   await refreshModalOutput();
   modalPollTimer = setInterval(refreshModalOutput, 3000);
 }
 
+let modalOutputOffset = 0;
+
 async function refreshModalOutput() {
   if (!viewingSessionId) return;
   try {
-    const r = await fetch(API + `/api/sessions/${encodeURIComponent(viewingSessionId)}`);
+    const r = await fetch(API + `/api/sessions/${encodeURIComponent(viewingSessionId)}/output?offset=${modalOutputOffset}`);
     const d = await r.json();
-    const body = document.getElementById("modalBody");
-    // Escape output to prevent XSS
-    const escaped = (d.output || []).map(l => l.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")).join("\n");
-    body.innerHTML = escaped || "<em>No output yet…</em>";
-    body.scrollTop = body.scrollHeight;
+    if (d.lines && d.lines.length > 0) {
+      const body = document.getElementById("modalBody");
+      const newContent = d.lines.map(l => l.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")).join("\n");
+      if (modalOutputOffset === 0) {
+        body.innerHTML = newContent;
+      } else {
+        body.innerHTML += "\n" + newContent;
+      }
+      modalOutputOffset = d.offset;
+      body.scrollTop = body.scrollHeight;
+    } else if (modalOutputOffset === 0) {
+      document.getElementById("modalBody").innerHTML = "<em>No output yet…</em>";
+    }
   } catch { /* ignore */ }
 }
 

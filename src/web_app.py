@@ -189,8 +189,6 @@ def api_research():
         on_output=lambda text: _session_output(session_id, text)
     )
 
-    stop_event = threading.Event()
-
     def _run():
         try:
             _session_output(session_id, f"[Research] Starting research: {problem}")
@@ -205,7 +203,6 @@ def api_research():
             _unregister_session(session_id)
 
     def _stop():
-        stop_event.set()
         _unregister_session(session_id)
 
     _register_session(session_id, "research", f"Research: {problem[:80]}",
