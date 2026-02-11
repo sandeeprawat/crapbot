@@ -8,9 +8,9 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, make_response
 
-from ai_client import get_ai_client
+from ai_client import get_ai_client, AIClient
 from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox
 from deep_research_agent import ResearchOrchestrator
 from config import AGENT_NAME
@@ -21,6 +21,34 @@ app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), "t
 # Tracks all active agentic sessions so they can be listed / stopped.
 _sessions_lock = threading.Lock()
 _sessions: Dict[str, Dict[str, Any]] = {}
+
+
+# ── Per-browser-session AIClient instances ────────────────────────────────────
+_client_lock = threading.Lock()
+_session_clients: Dict[str, AIClient] = {}
+
+SESSION_COOKIE = "crapbot_session"
+
+
+def _get_session_client() -> AIClient:
+    """Return an AIClient scoped to the current browser session (cookie)."""
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not sid:
+        sid = uuid.uuid4().hex
+    with _client_lock:
+        if sid not in _session_clients:
+            _session_clients[sid] = AIClient()
+    # Stash sid so the after-request hook can set the cookie if needed.
+    request._crapbot_sid = sid  # type: ignore[attr-defined]
+    return _session_clients[sid]
+
+
+@app.after_request
+def _set_session_cookie(response: Response) -> Response:
+    sid = getattr(request, "_crapbot_sid", None)
+    if sid and SESSION_COOKIE not in request.cookies:
+        response.set_cookie(SESSION_COOKIE, sid, httponly=True, samesite="Lax")
+    return response
 
 
 def _register_session(session_id: str, session_type: str, description: str,
@@ -55,6 +83,7 @@ def _unregister_session(session_id: str):
     with _sessions_lock:
         if session_id in _sessions:
             _sessions[session_id]["status"] = "stopped"
+            _sessions[session_id]["stopped_at"] = time.monotonic()
 
 
 def _session_output(session_id: str, text: str, stream: str = "output"):
@@ -109,9 +138,17 @@ def _timeout_watchdog():
                     except Exception:
                         pass
                     sess["status"] = "timed_out"
+                    sess["stopped_at"] = time.monotonic()
+
+            # Clean up sessions stopped/timed_out for more than 1 hour
+            mono_now = time.monotonic()
+            for sid in [s for s, sess in _sessions.items()
+                        if sess["status"] in ("stopped", "timed_out")
+                        and mono_now - sess.get("stopped_at", mono_now) > 3600]:
+                del _sessions[sid]
 
 
-_watchdog_thread = threading.Thread(target=_timeout_watchdog, daemon=True)
+_watchdog_thread= threading.Thread(target=_timeout_watchdog, daemon=True)
 _watchdog_thread.start()
 
 
@@ -129,7 +166,7 @@ def api_chat():
     if not message:
         return jsonify({"error": "Empty message"}), 400
 
-    ai = get_ai_client()
+    ai = _get_session_client()
     response = ai.chat(message)
     return jsonify({"response": response})
 
@@ -141,7 +178,7 @@ def api_do():
     if not task_desc:
         return jsonify({"error": "Empty task"}), 400
 
-    ai = get_ai_client()
+    ai = _get_session_client()
     response = ai.chat(
         f"Task: {task_desc}\n\nComplete this task. If it requires computation, data processing, or any programming, write and execute the necessary code. Show the actual results.",
     )
@@ -156,7 +193,7 @@ def api_search():
     if not query:
         return jsonify({"error": "Empty query"}), 400
 
-    ai = get_ai_client()
+    ai = _get_session_client()
     response = ai.search(query)
     return jsonify({"response": response})
 
@@ -164,7 +201,7 @@ def api_search():
 # ── Model / Tools ────────────────────────────────────────────────────────────
 @app.route("/api/models", methods=["GET"])
 def api_models():
-    ai = get_ai_client()
+    ai = _get_session_client()
     return jsonify({"models": ai.list_models(), "current": ai.current_model})
 
 
@@ -172,14 +209,14 @@ def api_models():
 def api_switch_model():
     data = request.get_json(force=True)
     model = data.get("model", "").strip()
-    ai = get_ai_client()
+    ai = _get_session_client()
     result = ai.switch_model(model)
     return jsonify({"result": result, "current": ai.current_model})
 
 
 @app.route("/api/tools", methods=["GET"])
 def api_tools_status():
-    ai = get_ai_client()
+    ai = _get_session_client()
     return jsonify({"enabled": ai.tools_enabled,
                     "available": ai.get_available_tools()})
 
@@ -187,7 +224,7 @@ def api_tools_status():
 @app.route("/api/tools", methods=["POST"])
 def api_tools_toggle():
     data = request.get_json(force=True)
-    ai = get_ai_client()
+    ai = _get_session_client()
     ai.toggle_tools(data.get("enabled", not ai.tools_enabled))
     return jsonify({"enabled": ai.tools_enabled})
 
@@ -357,19 +394,20 @@ def api_session_stop(session_id: str):
             except Exception:
                 pass
             sess["status"] = "stopped"
+            sess.setdefault("stopped_at", time.monotonic())
     return jsonify({"status": "stopped"})
 
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
-    ai = get_ai_client()
+    ai = _get_session_client()
     ai.reset_conversation()
     return jsonify({"status": "ok"})
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
-    port = int(os.environ.get("CRAPBOT_PORT", 5000))
+    port = int(os.environ.get("PORT", os.environ.get("CRAPBOT_PORT", "8000")))
     debug = os.environ.get("CRAPBOT_DEBUG", "0") == "1"
     print(f"\n{'='*60}")
     print(f"  {AGENT_NAME} — Web UI")

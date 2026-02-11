@@ -243,7 +243,7 @@ async function resetConversation() {
 }
 
 // ── Chat (left pane) ────────────────────────────────────────────────────────
-function esc(t) { return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function esc(t) { return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 
 function appendMsg(role, text) {
   const div = document.createElement("div");
@@ -407,15 +407,20 @@ function renderSessionsDrawer(sessions) {
       ? (s.timeout_seconds >= 86400 ? (s.timeout_seconds/86400).toFixed(1)+"d" : (s.timeout_seconds/3600).toFixed(1)+"h")
       : "∞";
     const desc = esc(s.description);
+    const status = esc(s.status);
+    const sid = esc(s.id);
     return `<div class="s-row">
       <div class="s-info">
-        <span class="status-badge ${s.status}">${s.status}</span>
+        <span class="status-badge ${status}">${status}</span>
         <span class="s-desc" title="${desc}">${desc}</span>
         <span style="color:var(--fg2)">(${timeout})</span>
       </div>
-      <button onclick="stopSessionById('${s.id}')" ${canStop ? '' : 'disabled'}>Stop</button>
+      <button data-session-id="${sid}" ${canStop ? '' : 'disabled'}>Stop</button>
     </div>`;
   }).join("");
+  body.querySelectorAll("button[data-session-id]").forEach(btn => {
+    btn.addEventListener("click", () => stopSessionById(btn.dataset.sessionId));
+  });
 }
 
 async function stopSessionById(id) {

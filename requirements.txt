@@ -6,3 +6,4 @@ asyncio
 requests
 flask>=3.0.0
 windows-curses;sys_platform=='win32'
+gunicorn;sys_platform!='win32'
