@@ -24,8 +24,14 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 
 
 def _register_session(session_id: str, session_type: str, description: str,
-                      timeout_seconds: Optional[float], stop_fn) -> Dict[str, Any]:
-    """Register a new agentic session."""
+                      timeout_seconds: Optional[float], stop_fn,
+                      extra_outputs: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
+    """Register a new agentic session.
+
+    Args:
+        extra_outputs: optional dict of named output streams beyond the main
+                       one, e.g. {"agent": [], "critic": []}.
+    """
     entry = {
         "id": session_id,
         "type": session_type,
@@ -36,8 +42,10 @@ def _register_session(session_id: str, session_type: str, description: str,
                       if timeout_seconds else None,
         "status": "running",
         "stop": stop_fn,        # callable – not serialised
-        "output": [],           # rolling log of output lines
+        "output": [],           # rolling log of output lines (main)
     }
+    if extra_outputs:
+        entry["extra_outputs"] = extra_outputs
     with _sessions_lock:
         _sessions[session_id] = entry
     return entry
@@ -49,14 +57,26 @@ def _unregister_session(session_id: str):
             _sessions[session_id]["status"] = "stopped"
 
 
-def _session_output(session_id: str, text: str):
-    """Append output text to a session's rolling log."""
+def _session_output(session_id: str, text: str, stream: str = "output"):
+    """Append output text to a session's rolling log.
+
+    Args:
+        stream: key name – "output" for main, or a name inside extra_outputs.
+    """
     with _sessions_lock:
-        if session_id in _sessions:
-            _sessions[session_id]["output"].append(text)
-            # Keep last 200 lines to avoid unbounded memory
-            if len(_sessions[session_id]["output"]) > 200:
-                _sessions[session_id]["output"] = _sessions[session_id]["output"][-200:]
+        sess = _sessions.get(session_id)
+        if not sess:
+            return
+        if stream == "output":
+            buf = sess["output"]
+        else:
+            buf = sess.get("extra_outputs", {}).get(stream)
+            if buf is None:
+                return
+        buf.append(text)
+        # Keep last 500 lines to avoid unbounded memory
+        if len(buf) > 500:
+            del buf[:len(buf) - 500]
 
 
 def _parse_timeout(value: str) -> Optional[float]:
@@ -214,28 +234,50 @@ def api_research():
                     "timeout_seconds": timeout})
 
 
-# ── Autonomous agent session ────────────────────────────────────────────────
+# ── Autonomous agent + critic session ────────────────────────────────────────
 @app.route("/api/autonomous/start", methods=["POST"])
 def api_autonomous_start():
-    """Start an autonomous agent session (does NOT auto-start)."""
+    """Start an autonomous agent paired with a critic reviewer.
+
+    Creates the same agent ↔ critic mailbox wiring as the CLI split_terminal:
+      agent writes to outbox → critic reads from inbox → critic writes to
+      outbox → agent reads from inbox.
+    Output from each is written to separate named streams ("agent", "critic")
+    so the UI can render them in two independent panes.
+    """
     data = request.get_json(force=True)
     prompt = data.get("prompt", "").strip() or None
     timeout = _parse_timeout(data.get("timeout", "3600"))
     session_id = f"auto-{uuid.uuid4().hex[:8]}"
 
+    # Inter-agent mailboxes (mirrors split_terminal.py wiring)
+    agent_to_critic = AgentMailbox()
+    critic_to_agent = AgentMailbox()
+
     agent = AutonomousAgent(
         prompt=prompt,
         cycle_delay=30.0,
-        on_output=lambda text: _session_output(session_id, text),
+        on_output=lambda text: _session_output(session_id, text, "agent"),
+        inbox=critic_to_agent,    # receives critic feedback
+        outbox=agent_to_critic,   # sends output to critic
+    )
+    critic = CriticAgent(
+        cycle_delay=5.0,
+        on_output=lambda text: _session_output(session_id, text, "critic"),
+        inbox=agent_to_critic,    # reads agent output
+        outbox=critic_to_agent,   # sends feedback to agent
     )
 
     def _stop():
         agent.stop()
+        critic.stop()
         _unregister_session(session_id)
 
-    _register_session(session_id, "autonomous", "Autonomous Agent",
-                      timeout, _stop)
+    _register_session(session_id, "autonomous", "Autonomous Agent + Critic",
+                      timeout, _stop,
+                      extra_outputs={"agent": [], "critic": []})
     agent.start()
+    critic.start()
 
     return jsonify({"session_id": session_id, "status": "started",
                     "timeout_seconds": timeout})
@@ -281,14 +323,25 @@ def api_session_detail(session_id: str):
 
 @app.route("/api/sessions/<session_id>/output", methods=["GET"])
 def api_session_output(session_id: str):
-    """Get only the output log (optionally from a given offset)."""
+    """Get output log for a session stream (optionally from a given offset).
+
+    Query params:
+        stream: "output" (default), "agent", or "critic"
+        offset: line offset for incremental polling
+    """
+    stream = request.args.get("stream", "output")
     offset = request.args.get("offset", 0, type=int)
     with _sessions_lock:
         sess = _sessions.get(session_id)
         if not sess:
             return jsonify({"error": "Session not found"}), 404
-        lines = sess["output"][offset:]
-    return jsonify({"lines": lines, "offset": offset + len(lines)})
+        if stream == "output":
+            buf = sess["output"]
+        else:
+            buf = sess.get("extra_outputs", {}).get(stream, [])
+        lines = buf[offset:]
+    return jsonify({"lines": lines, "offset": offset + len(lines),
+                    "stream": stream})
 
 
 @app.route("/api/sessions/<session_id>/stop", methods=["POST"])
