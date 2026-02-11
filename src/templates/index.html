@@ -98,9 +98,36 @@
 
     /* Checkbox label */
     .cb-label { display: flex; align-items: center; gap: 3px; color: var(--fg2); cursor: pointer; }
+
+    /* ── Login screen ──────────────────────────────────────── */
+    #loginScreen { position: fixed; inset: 0; z-index: 1000; background: var(--bg);
+                   display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    #loginScreen.hidden { display: none; }
+    .login-box { text-align: center; }
+    .login-box h1 { font-size: 2.4rem; color: var(--accent); margin-bottom: 8px; }
+    .login-box p { color: var(--fg2); margin-bottom: 28px; font-size: 1rem; }
+    #g_id_signin { display: inline-block; }
+
+    /* ── User info in header ───────────────────────────────── */
+    .user-info { display: flex; align-items: center; gap: 8px; margin-left: 12px; }
+    .user-info img { width: 28px; height: 28px; border-radius: 50%; }
+    .user-info .user-name { font-size: .82rem; color: var(--fg); max-width: 120px;
+                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .user-info button { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 3px 10px; font-size: .75rem; cursor: pointer; }
+    .user-info button:hover { border-color: var(--accent); color: var(--fg); }
   </style>
 </head>
 <body>
+
+<!-- ═══ Login Screen Overlay ═══ -->
+<div id="loginScreen">
+  <div class="login-box">
+    <h1>🤖 CrapBot</h1>
+    <p>Sign in with Google to continue</p>
+    <div id="g_id_signin"></div>
+  </div>
+</div>
 
 <header>
   <h1>🤖 {{ agent_name }}</h1>
@@ -109,6 +136,11 @@
     <select id="modelSelect"></select>
     <span id="toolsBadge" class="tools-badge on" onclick="toggleTools()" title="Click to toggle tools">Tools ON</span>
     <button onclick="resetConversation()">Reset Chat</button>
+    <div class="user-info" id="userInfo" style="display:none">
+      <img id="userAvatar" src="" alt="avatar">
+      <span class="user-name" id="userName"></span>
+      <button onclick="signOut()">Sign Out</button>
+    </div>
   </div>
 </header>
 
@@ -173,9 +205,11 @@
   </div>
 </div>
 
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 const API = "";
 const AGENT_NAME = "{{ agent_name }}";
+const GOOGLE_CLIENT_ID = "446284060043-t6871c7h7thc2v6aud1sp97lpe096027.apps.googleusercontent.com";
 let toolsOn = true;
 
 // Active agent+critic session being tracked in the right panes
@@ -185,12 +219,98 @@ let criticOffset = 0;
 let streamTimer = null;   // polls agent+critic output
 let sessionTimer = null;  // polls session list
 
+// ── Auth ────────────────────────────────────────────────────────────────────
+function showLogin() {
+  document.getElementById("loginScreen").classList.remove("hidden");
+}
+function hideLogin() {
+  document.getElementById("loginScreen").classList.add("hidden");
+}
+
+function showUserInfo(user) {
+  const el = document.getElementById("userInfo");
+  document.getElementById("userAvatar").src = user.picture || "";
+  document.getElementById("userName").textContent = user.name || user.email || "";
+  el.style.display = "flex";
+}
+
+function hideUserInfo() {
+  document.getElementById("userInfo").style.display = "none";
+}
+
+async function handleCredentialResponse(response) {
+  try {
+    const r = await fetch(API + "/api/auth/verify", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({credential: response.credential})
+    });
+    if (!r.ok) { alert("Authentication failed"); return; }
+    const user = await r.json();
+    sessionStorage.setItem("crapbot_user", JSON.stringify(user));
+    hideLogin();
+    showUserInfo(user);
+    initApp();
+  } catch (err) { alert("Auth error: " + err.message); }
+}
+
+async function signOut() {
+  try { await fetch(API + "/api/auth/logout", { method: "POST" }); } catch {}
+  sessionStorage.removeItem("crapbot_user");
+  hideUserInfo();
+  showLogin();
+  // Re-render Google button for next login
+  if (window.google && google.accounts) {
+    google.accounts.id.renderButton(document.getElementById("g_id_signin"),
+      { theme: "outline", size: "large", shape: "rectangular" });
+  }
+}
+
+async function checkAuth() {
+  try {
+    const r = await fetch(API + "/api/auth/me");
+    if (r.ok) {
+      const user = await r.json();
+      sessionStorage.setItem("crapbot_user", JSON.stringify(user));
+      hideLogin();
+      showUserInfo(user);
+      initApp();
+      return;
+    }
+  } catch {}
+  // Not authenticated
+  sessionStorage.removeItem("crapbot_user");
+  showLogin();
+}
+
+function initGoogleSignIn() {
+  if (!window.google || !google.accounts) {
+    // Script may not have loaded yet; retry
+    setTimeout(initGoogleSignIn, 200);
+    return;
+  }
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: handleCredentialResponse
+  });
+  google.accounts.id.renderButton(document.getElementById("g_id_signin"),
+    { theme: "outline", size: "large", shape: "rectangular" });
+}
+
 // ── Init ────────────────────────────────────────────────────────────────────
-window.addEventListener("DOMContentLoaded", () => {
+let appInitialized = false;
+function initApp() {
+  if (appInitialized) return;
+  appInitialized = true;
   loadModels();
   loadToolsStatus();
   pollSessions();
   sessionTimer = setInterval(pollSessions, 5000);
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  initGoogleSignIn();
+  checkAuth();
   document.getElementById("userInput").addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });

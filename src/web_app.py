@@ -1,4 +1,6 @@
 """Flask web application for CrapBot."""
+import base64
+import functools
 import json
 import os
 import sys
@@ -7,6 +9,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
+from urllib.parse import unquote
 
 from flask import Flask, render_template, request, jsonify, Response, make_response
 
@@ -14,6 +17,9 @@ from ai_client import get_ai_client, AIClient
 from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox
 from deep_research_agent import ResearchOrchestrator
 from config import AGENT_NAME
+
+GOOGLE_CLIENT_ID = "446284060043-t6871c7h7thc2v6aud1sp97lpe096027.apps.googleusercontent.com"
+AUTH_COOKIE = "crapbot_auth"
 
 app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), "templates"))
 
@@ -49,6 +55,77 @@ def _set_session_cookie(response: Response) -> Response:
     if sid and SESSION_COOKIE not in request.cookies:
         response.set_cookie(SESSION_COOKIE, sid, httponly=True, samesite="Lax")
     return response
+
+
+# ── Authentication ────────────────────────────────────────────────────────────
+def _get_auth_user():
+    """Return user info dict from the auth cookie, or None."""
+    raw = request.cookies.get(AUTH_COOKIE)
+    if not raw:
+        return None
+    try:
+        return json.loads(unquote(raw))
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def require_auth(f):
+    """Decorator that returns 401 for unauthenticated requests on /api/* routes."""
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if _get_auth_user() is None:
+            return jsonify({"error": "Authentication required"}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def _b64url_decode(s: str) -> bytes:
+    """Base64url decode without padding."""
+    s += "=" * (4 - len(s) % 4)
+    return base64.urlsafe_b64decode(s)
+
+
+@app.route("/api/auth/verify", methods=["POST"])
+def api_auth_verify():
+    data = request.get_json(force=True)
+    credential = data.get("credential", "")
+    if not credential:
+        return jsonify({"error": "Missing credential"}), 400
+    try:
+        parts = credential.split(".")
+        if len(parts) != 3:
+            return jsonify({"error": "Invalid JWT"}), 400
+        payload = json.loads(_b64url_decode(parts[1]))
+    except Exception:
+        return jsonify({"error": "Failed to decode token"}), 400
+
+    if payload.get("aud") != GOOGLE_CLIENT_ID:
+        return jsonify({"error": "Invalid audience"}), 403
+
+    user_info = {
+        "name": payload.get("name", ""),
+        "email": payload.get("email", ""),
+        "picture": payload.get("picture", ""),
+    }
+    resp = make_response(jsonify(user_info))
+    resp.set_cookie(AUTH_COOKIE, json.dumps(user_info),
+                    httponly=True, samesite="Lax", max_age=86400)
+    return resp
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    resp = make_response(jsonify({"status": "ok"}))
+    resp.delete_cookie(AUTH_COOKIE)
+    return resp
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def api_auth_me():
+    user = _get_auth_user()
+    if not user:
+        return jsonify({"error": "Not authenticated"}), 401
+    return jsonify(user)
 
 
 def _register_session(session_id: str, session_type: str, description: str,
@@ -160,6 +237,7 @@ def index():
 
 # ── Chat / Do ────────────────────────────────────────────────────────────────
 @app.route("/api/chat", methods=["POST"])
+@require_auth
 def api_chat():
     data = request.get_json(force=True)
     message = data.get("message", "").strip()
@@ -172,6 +250,7 @@ def api_chat():
 
 
 @app.route("/api/do", methods=["POST"])
+@require_auth
 def api_do():
     data = request.get_json(force=True)
     task_desc = data.get("task", "").strip()
@@ -187,6 +266,7 @@ def api_do():
 
 # ── Search ───────────────────────────────────────────────────────────────────
 @app.route("/api/search", methods=["POST"])
+@require_auth
 def api_search():
     data = request.get_json(force=True)
     query = data.get("query", "").strip()
@@ -200,12 +280,14 @@ def api_search():
 
 # ── Model / Tools ────────────────────────────────────────────────────────────
 @app.route("/api/models", methods=["GET"])
+@require_auth
 def api_models():
     ai = _get_session_client()
     return jsonify({"models": ai.list_models(), "current": ai.current_model})
 
 
 @app.route("/api/model", methods=["POST"])
+@require_auth
 def api_switch_model():
     data = request.get_json(force=True)
     model = data.get("model", "").strip()
@@ -215,6 +297,7 @@ def api_switch_model():
 
 
 @app.route("/api/tools", methods=["GET"])
+@require_auth
 def api_tools_status():
     ai = _get_session_client()
     return jsonify({"enabled": ai.tools_enabled,
@@ -222,6 +305,7 @@ def api_tools_status():
 
 
 @app.route("/api/tools", methods=["POST"])
+@require_auth
 def api_tools_toggle():
     data = request.get_json(force=True)
     ai = _get_session_client()
@@ -231,6 +315,7 @@ def api_tools_toggle():
 
 # ── Research session ─────────────────────────────────────────────────────────
 @app.route("/api/research", methods=["POST"])
+@require_auth
 def api_research():
     """Start a deep research session in the background."""
     data = request.get_json(force=True)
@@ -273,6 +358,7 @@ def api_research():
 
 # ── Autonomous agent + critic session ────────────────────────────────────────
 @app.route("/api/autonomous/start", methods=["POST"])
+@require_auth
 def api_autonomous_start():
     """Start an autonomous agent paired with a critic reviewer.
 
@@ -322,6 +408,7 @@ def api_autonomous_start():
 
 # ── Sessions management ─────────────────────────────────────────────────────
 @app.route("/api/sessions", methods=["GET"])
+@require_auth
 def api_sessions():
     """List all agentic sessions."""
     with _sessions_lock:
@@ -340,6 +427,7 @@ def api_sessions():
 
 
 @app.route("/api/sessions/<session_id>", methods=["GET"])
+@require_auth
 def api_session_detail(session_id: str):
     """Get session detail including output log."""
     with _sessions_lock:
@@ -359,6 +447,7 @@ def api_session_detail(session_id: str):
 
 
 @app.route("/api/sessions/<session_id>/output", methods=["GET"])
+@require_auth
 def api_session_output(session_id: str):
     """Get output log for a session stream (optionally from a given offset).
 
@@ -382,6 +471,7 @@ def api_session_output(session_id: str):
 
 
 @app.route("/api/sessions/<session_id>/stop", methods=["POST"])
+@require_auth
 def api_session_stop(session_id: str):
     """Stop / close an agentic session."""
     with _sessions_lock:
@@ -399,6 +489,7 @@ def api_session_stop(session_id: str):
 
 
 @app.route("/api/reset", methods=["POST"])
+@require_auth
 def api_reset():
     ai = _get_session_client()
     ai.reset_conversation()
