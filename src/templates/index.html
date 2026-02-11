@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ agent_name }} — Web UI</title>
+  <style>
+    :root {
+      --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+      --fg: #c9d1d9; --fg2: #8b949e; --accent: #58a6ff;
+      --green: #3fb950; --red: #f85149; --yellow: #d29922;
+      --border: #30363d; --radius: 8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+           background: var(--bg); color: var(--fg); display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 8px 16px;
+             display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    header h1 { font-size: 1.1rem; color: var(--accent); }
+    header .controls { display: flex; gap: 10px; align-items: center; font-size: .82rem; }
+    header select, header button { background: var(--bg3); color: var(--fg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 4px 10px; font-size: .82rem; cursor: pointer; }
+    header button:hover { border-color: var(--accent); }
+    .tools-badge { font-size: .75rem; padding: 2px 8px; border-radius: 10px; cursor: pointer; }
+    .tools-badge.on { background: var(--green); color: #000; }
+    .tools-badge.off { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border); }
+
+    /* ── 3-pane layout ──────────────────────────────────────── */
+    .main-area { display: flex; flex: 1; overflow: hidden; }
+
+    /* Left pane — chat / research */
+    .left-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .pane-header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 6px 12px;
+                   font-size: .82rem; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+    .pane-header .ph-label { display: flex; align-items: center; gap: 6px; }
+    .pane-header .ph-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .ph-dot.green { background: var(--green); }
+    .ph-dot.grey  { background: var(--fg2); }
+    #messages { flex: 1; overflow-y: auto; padding: 12px; }
+    .msg { margin-bottom: 12px; line-height: 1.5; }
+    .msg.user { color: var(--accent); }
+    .msg.bot { color: var(--fg); }
+    .msg .label { font-weight: 600; margin-right: 6px; }
+    .msg pre { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius);
+               padding: 8px; margin-top: 4px; overflow-x: auto; white-space: pre-wrap; font-size: .82rem; }
+    .input-bar { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--bg2); }
+    .input-bar select { width: 100px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 6px; font-size: .82rem; }
+    .input-bar input[type=text] { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 7px 10px; font-size: .9rem; outline: none; }
+    .input-bar input[type=text]:focus { border-color: var(--accent); }
+    .input-bar button { background: var(--accent); color: #000; font-weight: 600; border: none;
+      border-radius: var(--radius); padding: 7px 16px; cursor: pointer; font-size: .85rem; }
+    .input-bar button:hover { opacity: .9; }
+
+    /* Right column — agent + critic stacked */
+    .right-col { width: 45%; border-left: 1px solid var(--border); display: flex; flex-direction: column;
+                 flex-shrink: 0; }
+    .right-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .right-pane + .right-pane { border-top: 1px solid var(--border); }
+    .pane-output { flex: 1; overflow-y: auto; padding: 8px 10px; font-family: "SFMono-Regular", Consolas, monospace;
+                   font-size: .8rem; line-height: 1.5; white-space: pre-wrap; }
+    .pane-output:empty::before { content: "Waiting…"; color: var(--fg2); font-style: italic; }
+
+    /* Session control bar inside right column */
+    .session-bar { background: var(--bg2); border-top: 1px solid var(--border); padding: 8px 10px;
+                   display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: .78rem; flex-shrink: 0; }
+    .session-bar label { color: var(--fg2); }
+    .session-bar input, .session-bar select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 4px 6px; font-size: .78rem; }
+    .session-bar input[type=number] { width: 55px; }
+    .session-bar input[type=text] { flex: 1; min-width: 100px; }
+    .session-bar button { border: none; border-radius: var(--radius); padding: 5px 12px; cursor: pointer;
+      font-size: .78rem; font-weight: 600; }
+    .session-bar .btn-start { background: var(--green); color: #000; }
+    .session-bar .btn-stop  { background: var(--red);   color: #fff; }
+    .session-bar button:hover { opacity: .85; }
+    .session-bar button:disabled { opacity: .4; cursor: default; }
+    .session-bar .status-badge { padding: 2px 8px; border-radius: 10px; font-size: .72rem; font-weight: 600; }
+    .status-badge.running { background: var(--green); color: #000; }
+    .status-badge.stopped, .status-badge.timed_out { background: var(--red); color: #fff; }
+    .status-badge.idle { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border); }
+
+    /* Sessions list (collapsible) */
+    .sessions-drawer { border-top: 1px solid var(--border); max-height: 150px; overflow-y: auto;
+                       background: var(--bg2); font-size: .78rem; }
+    .sessions-drawer summary { padding: 6px 10px; cursor: pointer; color: var(--fg2); font-weight: 600; }
+    .sessions-drawer .s-row { display: flex; justify-content: space-between; align-items: center;
+      padding: 4px 10px; border-top: 1px solid var(--border); }
+    .sessions-drawer .s-row .s-info { display: flex; gap: 6px; align-items: center; min-width: 0; }
+    .sessions-drawer .s-row .s-desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sessions-drawer button { background: var(--red); color: #fff; border: none; border-radius: var(--radius);
+      padding: 2px 8px; cursor: pointer; font-size: .72rem; }
+    .sessions-drawer button:hover { opacity: .85; }
+    .sessions-drawer button:disabled { opacity: .4; cursor: default; }
+
+    /* Checkbox label */
+    .cb-label { display: flex; align-items: center; gap: 3px; color: var(--fg2); cursor: pointer; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🤖 {{ agent_name }}</h1>
+  <div class="controls">
+    <label style="color:var(--fg2)">Model:</label>
+    <select id="modelSelect"></select>
+    <span id="toolsBadge" class="tools-badge on" onclick="toggleTools()" title="Click to toggle tools">Tools ON</span>
+    <button onclick="resetConversation()">Reset Chat</button>
+  </div>
+</header>
+
+<div class="main-area">
+  <!-- ═══ LEFT PANE: Chat / Research ═══ -->
+  <div class="left-pane">
+    <div class="pane-header">
+      <span class="ph-label"><span class="ph-dot green"></span> Chat &amp; Research</span>
+    </div>
+    <div id="messages"></div>
+    <div class="input-bar">
+      <select id="cmdSelect" title="Command type">
+        <option value="chat">Chat</option>
+        <option value="do">Do (auto)</option>
+        <option value="search">Search</option>
+        <option value="research">Research</option>
+      </select>
+      <input type="text" id="userInput" placeholder="Type a message…" autocomplete="off">
+      <button id="sendBtn" onclick="send()">Send</button>
+    </div>
+  </div>
+
+  <!-- ═══ RIGHT COLUMN: Agent (top) + Critic (bottom) ═══ -->
+  <div class="right-col">
+    <!-- Agent pane -->
+    <div class="right-pane">
+      <div class="pane-header" style="color:var(--green)">
+        <span class="ph-label"><span class="ph-dot" id="agentDot"></span> Autonomous Agent</span>
+        <span class="status-badge idle" id="agentStatus">idle</span>
+      </div>
+      <div class="pane-output" id="agentOutput"></div>
+    </div>
+    <!-- Critic pane -->
+    <div class="right-pane">
+      <div class="pane-header" style="color:var(--yellow)">
+        <span class="ph-label"><span class="ph-dot" id="criticDot"></span> Critic / Reviewer</span>
+        <span class="status-badge idle" id="criticStatus">idle</span>
+      </div>
+      <div class="pane-output" id="criticOutput"></div>
+    </div>
+    <!-- Session controls -->
+    <div class="session-bar">
+      <label>Prompt:</label>
+      <input type="text" id="agentPrompt" placeholder="Optional custom prompt…">
+      <label>Timeout:</label>
+      <input type="number" id="timeoutValue" value="1" min="0" step="0.5">
+      <select id="timeoutUnit">
+        <option value="hours" selected>Hours</option>
+        <option value="days">Days</option>
+      </select>
+      <label class="cb-label"><input type="checkbox" id="timeoutUnlimited"> ∞</label>
+      <button class="btn-start" id="btnStartAgent" onclick="startAgentSession()">Start</button>
+      <button class="btn-stop"  id="btnStopAgent"  onclick="stopAgentSession()" disabled>Stop</button>
+    </div>
+    <!-- All sessions drawer -->
+    <div class="sessions-drawer">
+      <details>
+        <summary id="sessionsTitle">All Sessions (0)</summary>
+        <div id="sessionsBody"></div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "";
+const AGENT_NAME = "{{ agent_name }}";
+let toolsOn = true;
+
+// Active agent+critic session being tracked in the right panes
+let activeSessionId = null;
+let agentOffset = 0;
+let criticOffset = 0;
+let streamTimer = null;   // polls agent+critic output
+let sessionTimer = null;  // polls session list
+
+// ── Init ────────────────────────────────────────────────────────────────────
+window.addEventListener("DOMContentLoaded", () => {
+  loadModels();
+  loadToolsStatus();
+  pollSessions();
+  sessionTimer = setInterval(pollSessions, 5000);
+  document.getElementById("userInput").addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  document.getElementById("timeoutUnlimited").addEventListener("change", e => {
+    document.getElementById("timeoutValue").disabled = e.target.checked;
+    document.getElementById("timeoutUnit").disabled = e.target.checked;
+  });
+});
+
+// ── Models ──────────────────────────────────────────────────────────────────
+async function loadModels() {
+  try {
+    const r = await fetch(API + "/api/models");
+    const d = await r.json();
+    const sel = document.getElementById("modelSelect");
+    sel.innerHTML = "";
+    d.models.forEach(m => {
+      const opt = document.createElement("option");
+      opt.value = m; opt.textContent = m;
+      if (m === d.current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", () => switchModel(sel.value));
+  } catch { /* ignore */ }
+}
+async function switchModel(m) {
+  await fetch(API + "/api/model", { method: "POST",
+    headers: {"Content-Type":"application/json"}, body: JSON.stringify({model:m}) });
+}
+
+// ── Tools ───────────────────────────────────────────────────────────────────
+async function loadToolsStatus() {
+  try { const d = await (await fetch(API + "/api/tools")).json(); toolsOn = d.enabled; updateToolsBadge(); } catch {}
+}
+async function toggleTools() {
+  toolsOn = !toolsOn;
+  await fetch(API + "/api/tools", { method: "POST",
+    headers: {"Content-Type":"application/json"}, body: JSON.stringify({enabled:toolsOn}) });
+  updateToolsBadge();
+}
+function updateToolsBadge() {
+  const b = document.getElementById("toolsBadge");
+  b.textContent = toolsOn ? "Tools ON" : "Tools OFF";
+  b.className = "tools-badge " + (toolsOn ? "on" : "off");
+}
+async function resetConversation() {
+  await fetch(API + "/api/reset", { method: "POST" });
+  document.getElementById("messages").innerHTML = "";
+  appendMsg("system", "Conversation reset.");
+}
+
+// ── Chat (left pane) ────────────────────────────────────────────────────────
+function esc(t) { return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function appendMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  const label = role === "user" ? "You" : role === "system" ? "System" : AGENT_NAME;
+  div.innerHTML = `<span class="label">[${label}]</span><pre>${esc(text)}</pre>`;
+  const m = document.getElementById("messages");
+  m.appendChild(div);
+  m.scrollTop = m.scrollHeight;
+}
+
+async function send() {
+  const input = document.getElementById("userInput");
+  const cmd = document.getElementById("cmdSelect").value;
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  appendMsg("user", text);
+  const btn = document.getElementById("sendBtn");
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    let endpoint, body;
+    if (cmd === "chat") { endpoint = "/api/chat"; body = { message: text }; }
+    else if (cmd === "do") { endpoint = "/api/do"; body = { task: text }; }
+    else if (cmd === "search") { endpoint = "/api/search"; body = { query: text }; }
+    else if (cmd === "research") {
+      const timeout = getTimeoutSeconds();
+      endpoint = "/api/research";
+      body = { problem: text, timeout: timeout === null ? "unlimited" : String(timeout) };
+    }
+    const r = await fetch(API + endpoint, { method: "POST",
+      headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (d.response) appendMsg("bot", d.response);
+    else if (d.session_id) { appendMsg("bot", `Research session started: ${d.session_id}\nView output in the Sessions drawer →`); pollSessions(); }
+    else if (d.error) appendMsg("system", "Error: " + d.error);
+  } catch (err) { appendMsg("system", "Request failed: " + err.message); }
+  finally { btn.disabled = false; btn.textContent = "Send"; }
+}
+
+// ── Right panes — agent + critic live output ────────────────────────────────
+function setRightPaneStatus(running) {
+  const agentDot  = document.getElementById("agentDot");
+  const criticDot = document.getElementById("criticDot");
+  const aStatus   = document.getElementById("agentStatus");
+  const cStatus   = document.getElementById("criticStatus");
+  if (running) {
+    agentDot.className = "ph-dot green"; criticDot.className = "ph-dot green";
+    aStatus.textContent = "running"; aStatus.className = "status-badge running";
+    cStatus.textContent = "running"; cStatus.className = "status-badge running";
+  } else {
+    agentDot.className = "ph-dot grey"; criticDot.className = "ph-dot grey";
+    aStatus.textContent = "idle"; aStatus.className = "status-badge idle";
+    cStatus.textContent = "idle"; cStatus.className = "status-badge idle";
+  }
+}
+
+function appendToPane(paneId, lines) {
+  if (!lines.length) return;
+  const el = document.getElementById(paneId);
+  const frag = document.createDocumentFragment();
+  lines.forEach(l => {
+    const span = document.createElement("span");
+    span.textContent = l + "\n";
+    frag.appendChild(span);
+  });
+  el.appendChild(frag);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function pollStreams() {
+  if (!activeSessionId) return;
+  try {
+    const [aRes, cRes] = await Promise.all([
+      fetch(API + `/api/sessions/${encodeURIComponent(activeSessionId)}/output?stream=agent&offset=${agentOffset}`),
+      fetch(API + `/api/sessions/${encodeURIComponent(activeSessionId)}/output?stream=critic&offset=${criticOffset}`)
+    ]);
+    const aData = await aRes.json();
+    const cData = await cRes.json();
+    if (aData.lines) { appendToPane("agentOutput", aData.lines); agentOffset = aData.offset; }
+    if (cData.lines) { appendToPane("criticOutput", cData.lines); criticOffset = cData.offset; }
+
+    // Check if session ended
+    const sRes = await fetch(API + `/api/sessions/${encodeURIComponent(activeSessionId)}`);
+    const sData = await sRes.json();
+    if (sData.status !== "running") {
+      onSessionEnded(sData.status);
+    }
+  } catch { /* ignore */ }
+}
+
+function onSessionEnded(status) {
+  setRightPaneStatus(false);
+  const aStatus = document.getElementById("agentStatus");
+  const cStatus = document.getElementById("criticStatus");
+  aStatus.textContent = status; aStatus.className = "status-badge " + status;
+  cStatus.textContent = status; cStatus.className = "status-badge " + status;
+  document.getElementById("btnStartAgent").disabled = false;
+  document.getElementById("btnStopAgent").disabled = true;
+  if (streamTimer) { clearInterval(streamTimer); streamTimer = null; }
+  activeSessionId = null;
+  pollSessions();
+}
+
+// ── Start / Stop agent+critic session ───────────────────────────────────────
+function getTimeoutSeconds() {
+  if (document.getElementById("timeoutUnlimited").checked) return null;
+  const val = parseFloat(document.getElementById("timeoutValue").value) || 1;
+  const unit = document.getElementById("timeoutUnit").value;
+  return unit === "days" ? val * 86400 : val * 3600;
+}
+
+async function startAgentSession() {
+  const prompt = document.getElementById("agentPrompt").value.trim();
+  const timeout = getTimeoutSeconds();
+  const timeoutStr = timeout === null ? "unlimited" : String(timeout);
+  document.getElementById("btnStartAgent").disabled = true;
+  // Clear previous output
+  document.getElementById("agentOutput").innerHTML = "";
+  document.getElementById("criticOutput").innerHTML = "";
+  agentOffset = 0; criticOffset = 0;
+  try {
+    const r = await fetch(API + "/api/autonomous/start", { method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ prompt: prompt || undefined, timeout: timeoutStr }) });
+    const d = await r.json();
+    activeSessionId = d.session_id;
+    setRightPaneStatus(true);
+    document.getElementById("btnStopAgent").disabled = false;
+    // Start polling
+    streamTimer = setInterval(pollStreams, 2000);
+    pollSessions();
+  } catch (err) {
+    alert("Failed to start session: " + err.message);
+    document.getElementById("btnStartAgent").disabled = false;
+  }
+}
+
+async function stopAgentSession() {
+  if (!activeSessionId) return;
+  await fetch(API + `/api/sessions/${encodeURIComponent(activeSessionId)}/stop`, { method: "POST" });
+  onSessionEnded("stopped");
+}
+
+// ── Sessions drawer ─────────────────────────────────────────────────────────
+async function pollSessions() {
+  try {
+    const r = await fetch(API + "/api/sessions");
+    const d = await r.json();
+    renderSessionsDrawer(d.sessions);
+  } catch {}
+}
+
+function renderSessionsDrawer(sessions) {
+  document.getElementById("sessionsTitle").textContent = `All Sessions (${sessions.length})`;
+  const body = document.getElementById("sessionsBody");
+  if (!sessions.length) { body.innerHTML = '<div style="padding:6px 10px;color:var(--fg2)">No sessions</div>'; return; }
+  body.innerHTML = sessions.map(s => {
+    const canStop = s.status === "running";
+    const timeout = s.timeout_seconds
+      ? (s.timeout_seconds >= 86400 ? (s.timeout_seconds/86400).toFixed(1)+"d" : (s.timeout_seconds/3600).toFixed(1)+"h")
+      : "∞";
+    const desc = esc(s.description);
+    return `<div class="s-row">
+      <div class="s-info">
+        <span class="status-badge ${s.status}">${s.status}</span>
+        <span class="s-desc" title="${desc}">${desc}</span>
+        <span style="color:var(--fg2)">(${timeout})</span>
+      </div>
+      <button onclick="stopSessionById('${s.id}')" ${canStop ? '' : 'disabled'}>Stop</button>
+    </div>`;
+  }).join("");
+}
+
+async function stopSessionById(id) {
+  await fetch(API + `/api/sessions/${encodeURIComponent(id)}/stop`, { method: "POST" });
+  if (id === activeSessionId) onSessionEnded("stopped");
+  pollSessions();
+}
+</script>
+</body>
+</html>

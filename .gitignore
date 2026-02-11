@@ -22,6 +22,9 @@ outputs/
 # Empty dirs
 -p/
 
+# pip artifacts
+=*
+
 # IDE
 .vscode/
 .idea/
