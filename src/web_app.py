@@ -198,26 +198,56 @@ def _parse_timeout(value: str) -> Optional[float]:
 
 # ── Timeout watchdog ─────────────────────────────────────────────────────────
 def _timeout_watchdog():
-    """Background thread that stops sessions that have exceeded their timeout."""
+    """Background thread that stops sessions that have exceeded their timeout
+    and detects sessions whose worker threads have died."""
     while True:
         time.sleep(10)
         now = datetime.now()
+
+        # Collect sessions that need to be timed out or marked stopped.
+        # We must NOT hold _sessions_lock while calling stop() to avoid
+        # deadlocking with _unregister_session.
+        to_timeout = []
+        to_mark_stopped = []
         with _sessions_lock:
             for sid, sess in list(_sessions.items()):
                 if sess["status"] != "running":
                     continue
-                if sess["timeout_seconds"] is None:
-                    continue  # unlimited
-                started = datetime.fromisoformat(sess["started_at"])
-                if (now - started).total_seconds() > sess["timeout_seconds"]:
-                    try:
-                        sess["stop"]()
-                    except Exception:
-                        pass
-                    sess["status"] = "timed_out"
-                    sess["stopped_at"] = time.monotonic()
+                # Check timeout
+                if sess["timeout_seconds"] is not None:
+                    started = datetime.fromisoformat(sess["started_at"])
+                    if (now - started).total_seconds() > sess["timeout_seconds"]:
+                        to_timeout.append((sid, sess))
+                        continue
+                # Check if worker threads have died (natural completion)
+                alive_fn = sess.get("_is_alive")
+                if alive_fn and not alive_fn():
+                    to_mark_stopped.append((sid, sess))
 
-            # Clean up sessions stopped/timed_out for more than 1 hour
+        # Stop timed-out sessions (outside the lock)
+        for sid, sess in to_timeout:
+            try:
+                sess["stop"]()
+            except Exception:
+                pass
+            with _sessions_lock:
+                if sid in _sessions and _sessions[sid]["status"] == "running":
+                    _sessions[sid]["status"] = "timed_out"
+                    _sessions[sid]["stopped_at"] = time.monotonic()
+
+        # Mark naturally-completed sessions as stopped
+        for sid, sess in to_mark_stopped:
+            try:
+                sess["stop"]()
+            except Exception:
+                pass
+            with _sessions_lock:
+                if sid in _sessions and _sessions[sid]["status"] == "running":
+                    _sessions[sid]["status"] = "stopped"
+                    _sessions[sid]["stopped_at"] = time.monotonic()
+
+        # Clean up sessions stopped/timed_out for more than 1 hour
+        with _sessions_lock:
             mono_now = time.monotonic()
             for sid in [s for s, sess in _sessions.items()
                         if sess["status"] in ("stopped", "timed_out")
@@ -345,7 +375,10 @@ def api_research():
             _unregister_session(session_id)
 
     def _stop():
-        _unregister_session(session_id)
+        # NOTE: do NOT call _unregister_session here – callers
+        # (api_session_stop / _timeout_watchdog) manage the status
+        # themselves and calling it while the lock is held deadlocks.
+        pass
 
     _register_session(session_id, "research", f"Research: {problem[:80]}",
                       timeout, _stop)
@@ -394,11 +427,21 @@ def api_autonomous_start():
     def _stop():
         agent.stop()
         critic.stop()
-        _unregister_session(session_id)
+        # NOTE: do NOT call _unregister_session here – callers
+        # (api_session_stop / _timeout_watchdog) manage the status
+        # themselves, and calling it here while the lock is held
+        # would deadlock.
 
-    _register_session(session_id, "autonomous", "Autonomous Agent + Critic",
+    def _is_alive():
+        """Return True if at least one worker thread is still running."""
+        a_alive = agent._thread is not None and agent._thread.is_alive()
+        c_alive = critic._thread is not None and critic._thread.is_alive()
+        return a_alive or c_alive
+
+    sess = _register_session(session_id, "autonomous", "Autonomous Agent + Critic",
                       timeout, _stop,
                       extra_outputs={"agent": [], "critic": []})
+    sess["_is_alive"] = _is_alive
     agent.start()
     critic.start()
 
@@ -474,15 +517,25 @@ def api_session_output(session_id: str):
 @require_auth
 def api_session_stop(session_id: str):
     """Stop / close an agentic session."""
+    # Grab the stop function and release the lock BEFORE calling it
+    # to avoid deadlocking with _unregister_session.
     with _sessions_lock:
         sess = _sessions.get(session_id)
         if not sess:
             return jsonify({"error": "Session not found"}), 404
-        if sess["status"] == "running":
-            try:
-                sess["stop"]()
-            except Exception:
-                pass
+        if sess["status"] != "running":
+            return jsonify({"status": sess["status"]})
+        stop_fn = sess["stop"]
+
+    # Call stop outside the lock
+    try:
+        stop_fn()
+    except Exception:
+        pass
+
+    with _sessions_lock:
+        sess = _sessions.get(session_id)
+        if sess and sess["status"] == "running":
             sess["status"] = "stopped"
             sess.setdefault("stopped_at", time.monotonic())
     return jsonify({"status": "stopped"})
