@@ -6,6 +6,9 @@ Two-column layout:
   Right-bottom pane: critic AI agent output (reviews primary agent, provides feedback)
 """
 import curses
+import os
+import subprocess
+import tempfile
 import threading
 import textwrap
 import time
@@ -42,6 +45,50 @@ class PaneBuffer:
     def clear(self):
         with self._lock:
             self._lines.clear()
+
+
+def get_multiline_input(initial_text: str = "") -> str:
+    """Open a temporary file in the user's editor for multi-line text input.
+    
+    Args:
+        initial_text: Optional initial text to populate the editor with.
+        
+    Returns:
+        The text entered by the user, or empty string if cancelled.
+    """
+    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'nano'))
+    
+    with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as tf:
+        temp_path = tf.name
+        if initial_text:
+            tf.write(initial_text)
+            tf.write("\n\n# Enter your multi-line text above this line.\n")
+            tf.write("# Lines starting with # will be ignored.\n")
+        else:
+            tf.write("# Enter your multi-line text below.\n")
+            tf.write("# Lines starting with # will be ignored.\n")
+            tf.write("# Save and close the editor when done.\n\n")
+        tf.flush()
+    
+    try:
+        # Open the editor
+        subprocess.call([editor, temp_path])
+        
+        # Read the content back
+        with open(temp_path, 'r') as f:
+            lines = f.readlines()
+        
+        # Filter out comment lines and strip trailing whitespace
+        content_lines = [line.rstrip() for line in lines if not line.strip().startswith('#')]
+        content = '\n'.join(content_lines).strip()
+        
+        return content
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
 
 
 class SplitTerminal:
@@ -94,6 +141,7 @@ class SplitTerminal:
             "pause": self.cmd_pause_agent,
             "resume": self.cmd_resume_agent,
             "instruct": self.cmd_instruct_agent,
+            "topic": self.cmd_topic,
             "fresh": self.cmd_fresh_restart,
             "clear": self.cmd_clear,
             "agents": self.cmd_agents_status,
@@ -492,7 +540,8 @@ Agent Control (use: <cmd> [agent|critic|both]):
   resume [target]   - Resume agent/critic/both
   fresh             - Clear session & restart both agents
   agents            - Show status of both agents
-  instruct <target> <text> - Change instructions
+  instruct <target> <text> - Change instructions (single-line)
+  topic             - Set topic with multi-line editor
 
 Task Management:
   task <desc>       - Background task
@@ -603,6 +652,58 @@ Settings:
             if self.critic_agent:
                 self.critic_agent.update_instructions(rest)
                 self._out("[System] Critic instructions updated.")
+
+    def cmd_topic(self, args: str):
+        """Provide a topic or multi-line text to the agent/critic session.
+        
+        Opens an editor for multi-line input. The topic will be injected as context
+        into the agents' instructions to guide their discussion.
+        """
+        self._out("[System] Opening editor for multi-line topic input...")
+        self._out("[System] The terminal will be suspended. Save and close the editor when done.")
+        
+        # We need to suspend curses temporarily to use the editor
+        curses.def_prog_mode()  # Save current curses state
+        curses.endwin()  # Exit curses mode temporarily
+        
+        try:
+            topic_text = get_multiline_input("")
+            
+            if not topic_text:
+                self._out("[System] No topic provided. Cancelled.")
+                return
+                
+            # Restore curses
+            curses.reset_prog_mode()
+            self._stdscr.refresh()
+            
+            # Show the topic
+            self._out(f"[System] Topic received ({len(topic_text)} characters):")
+            preview = topic_text[:200] + ("..." if len(topic_text) > 200 else "")
+            self._out(f"  {preview}")
+            
+            # Update both agents with topic context
+            topic_instruction = f"Focus your discussion on this topic:\n\n{topic_text}\n\n"
+            
+            if self.auto_agent:
+                current_prompt = self.auto_agent.get_instructions()
+                # Prepend topic to existing instructions
+                new_prompt = topic_instruction + current_prompt
+                self.auto_agent.update_instructions(new_prompt)
+                self._out("[System] Topic added to Agent instructions.")
+                
+            if self.critic_agent:
+                current_prompt = self.critic_agent.get_instructions()
+                # Prepend topic to existing instructions
+                new_prompt = topic_instruction + current_prompt
+                self.critic_agent.update_instructions(new_prompt)
+                self._out("[System] Topic added to Critic instructions.")
+                
+        except Exception as e:
+            # Restore curses even on error
+            curses.reset_prog_mode()
+            self._stdscr.refresh()
+            self._out(f"[Error] Failed to get topic: {e}")
 
     def cmd_clear(self, args: str):
         target = args.strip().lower() if args else "left"
