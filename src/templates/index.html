@@ -82,6 +82,12 @@
     .status-badge.running { background: var(--green); color: #000; }
     .status-badge.stopped, .status-badge.timed_out { background: var(--red); color: #fff; }
     .status-badge.idle { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border); }
+    .topic-row { display: flex; gap: 6px; align-items: flex-start; width: 100%; }
+    .topic-row label { color: var(--fg2); padding-top: 4px; white-space: nowrap; }
+    .topic-row textarea { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 6px 8px; font-size: .78rem; font-family: inherit;
+      min-height: 48px; max-height: 120px; resize: vertical; }
+    .topic-row textarea:focus { border-color: var(--accent); outline: none; }
     .persona-row { display: flex; gap: 6px; align-items: center; width: 100%; }
     .persona-row select { flex: 1; min-width: 100px; }
     .persona-row .btn-edit-persona { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border);
@@ -217,6 +223,10 @@
         <select id="criticPersona"></select>
         <button class="btn-edit-persona" onclick="openPersonaModal('criticPersona')">✏️</button>
         <button class="btn-edit-persona" onclick="openPersonaModal(null)" title="Add new persona">＋</button>
+      </div>
+      <div class="topic-row">
+        <label>Topic:</label>
+        <textarea id="agentTopic" placeholder="What should the agents discuss? (multi-line)&#10;e.g. Explore quantum computing applications in drug discovery…"></textarea>
       </div>
       <label>Timeout:</label>
       <input type="number" id="timeoutValue" value="1" min="0" step="0.5">
@@ -536,6 +546,7 @@ function getTimeoutSeconds() {
 async function startAgentSession() {
   const agentPersonaId = document.getElementById("agentPersona").value;
   const criticPersonaId = document.getElementById("criticPersona").value;
+  const topic = document.getElementById("agentTopic").value.trim();
   const timeout = getTimeoutSeconds();
   const timeoutStr = timeout === null ? "unlimited" : String(timeout);
   document.getElementById("btnStartAgent").disabled = true;
@@ -549,6 +560,7 @@ async function startAgentSession() {
       body: JSON.stringify({
         agent_persona_id: agentPersonaId || undefined,
         critic_persona_id: criticPersonaId || undefined,
+        topic: topic || undefined,
         timeout: timeoutStr
       }) });
     const d = await r.json();

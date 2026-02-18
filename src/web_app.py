@@ -411,6 +411,7 @@ def api_autonomous_start():
     # Resolve persona prompts
     agent_prompt = prompt  # explicit prompt overrides persona
     critic_prompt = None
+    topic = data.get("topic", "").strip()
     if not agent_prompt and agent_persona_id:
         p = persona_manager.get(agent_persona_id)
         if p:
@@ -419,6 +420,16 @@ def api_autonomous_start():
         p = persona_manager.get(critic_persona_id)
         if p:
             critic_prompt = p["instructions"]
+
+    # Prepend topic to both prompts if provided
+    if topic:
+        topic_prefix = f"Focus your discussion on this topic:\n\n{topic}\n\n"
+        if agent_prompt:
+            agent_prompt = topic_prefix + agent_prompt
+        else:
+            agent_prompt = topic_prefix
+        if critic_prompt:
+            critic_prompt = topic_prefix + critic_prompt
 
     # Inter-agent mailboxes (mirrors split_terminal.py wiring)
     agent_to_critic = AgentMailbox()
