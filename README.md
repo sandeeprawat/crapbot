@@ -112,8 +112,31 @@ stop [agent|critic|both]   # Stop agents
 start [agent|critic|both]  # Start agents
 pause [agent|critic|both]  # Pause agents
 resume [agent|critic|both] # Resume agents
-instruct <target> <text>   # Change agent instructions
+instruct <target> <text>   # Change agent instructions (single-line)
+topic                      # Set discussion topic (multi-line editor)
+fresh                      # Clear session & restart both agents
+agents                     # Show status of both agents
 ```
+
+#### Setting a Topic for Agent/Critic Discussion
+
+The `topic` command allows you to provide multi-line text input to guide the Agent/Critic session:
+
+```bash
+# In split-screen mode
+topic
+```
+
+This will:
+1. Open your preferred text editor (set via `EDITOR` environment variable, defaults to `nano`)
+2. Allow you to enter multi-line text describing a topic or theme for discussion
+3. Lines starting with `#` are treated as comments and ignored
+4. When you save and close the editor, the topic is added to both Agent and Critic instructions
+
+**Example use cases:**
+- Provide a detailed research topic for the agents to explore
+- Set constraints or guidelines for the discussion
+- Give background context for a complex problem
 
 ## Deep Research System
 
