@@ -668,42 +668,39 @@ Settings:
         
         try:
             topic_text = get_multiline_input("")
-            
-            if not topic_text:
-                self._out("[System] No topic provided. Cancelled.")
-                return
-                
-            # Restore curses
-            curses.reset_prog_mode()
-            self._stdscr.refresh()
-            
-            # Show the topic
-            self._out(f"[System] Topic received ({len(topic_text)} characters):")
-            preview = topic_text[:200] + ("..." if len(topic_text) > 200 else "")
-            self._out(f"  {preview}")
-            
-            # Update both agents with topic context
-            topic_instruction = f"Focus your discussion on this topic:\n\n{topic_text}\n\n"
-            
-            if self.auto_agent:
-                current_prompt = self.auto_agent.get_instructions()
-                # Prepend topic to existing instructions
-                new_prompt = topic_instruction + current_prompt
-                self.auto_agent.update_instructions(new_prompt)
-                self._out("[System] Topic added to Agent instructions.")
-                
-            if self.critic_agent:
-                current_prompt = self.critic_agent.get_instructions()
-                # Prepend topic to existing instructions
-                new_prompt = topic_instruction + current_prompt
-                self.critic_agent.update_instructions(new_prompt)
-                self._out("[System] Topic added to Critic instructions.")
-                
         except Exception as e:
-            # Restore curses even on error
             curses.reset_prog_mode()
             self._stdscr.refresh()
             self._out(f"[Error] Failed to get topic: {e}")
+            return
+
+        # Always restore curses after editor closes
+        curses.reset_prog_mode()
+        self._stdscr.refresh()
+
+        if not topic_text:
+            self._out("[System] No topic provided. Cancelled.")
+            return
+            
+        # Show the topic
+        self._out(f"[System] Topic received ({len(topic_text)} characters):")
+        preview = topic_text[:200] + ("..." if len(topic_text) > 200 else "")
+        self._out(f"  {preview}")
+        
+        # Update both agents with topic context
+        topic_instruction = f"Focus your discussion on this topic:\n\n{topic_text}\n\n"
+        
+        if self.auto_agent:
+            current_prompt = self.auto_agent.get_instructions()
+            new_prompt = topic_instruction + current_prompt
+            self.auto_agent.update_instructions(new_prompt)
+            self._out("[System] Topic added to Agent instructions.")
+            
+        if self.critic_agent:
+            current_prompt = self.critic_agent.get_instructions()
+            new_prompt = topic_instruction + current_prompt
+            self.critic_agent.update_instructions(new_prompt)
+            self._out("[System] Topic added to Critic instructions.")
 
     def cmd_clear(self, args: str):
         target = args.strip().lower() if args else "left"
