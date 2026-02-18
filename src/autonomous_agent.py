@@ -9,6 +9,7 @@ import queue
 import threading
 import time
 import traceback
+import uuid
 from datetime import datetime
 from typing import List, Callable, Optional
 from ai_client import get_ai_client
@@ -41,7 +42,132 @@ Focus on things the other agent can actually act on."""
 _AGENT_STATE_DIR = os.path.join(DATA_DIR, "agent_state")
 _INSTRUCTIONS_FILE = os.path.join(_AGENT_STATE_DIR, "instructions.json")
 _SESSION_FILE = os.path.join(_AGENT_STATE_DIR, "last_session.json")
+_PERSONAS_FILE = os.path.join(_AGENT_STATE_DIR, "personas.json")
 os.makedirs(_AGENT_STATE_DIR, exist_ok=True)
+
+
+DEFAULT_ENCOURAGER_PROMPT = """You're an attentive listener and thinking coach.
+Your job is NOT to critique or grade — it's to encourage deeper exploration:
+- Reflect back what the agent said in a way that validates the effort
+- Ask a probing question that pushes the thinking further
+- Suggest an angle or connection the agent might not have considered
+- Gently nudge toward more depth, nuance, or creativity
+
+Keep it warm and curious — like a great mentor who believes in the thinker.
+Never score or judge. Always end with an open-ended question."""
+
+
+class PersonaManager:
+    """Manages named personas (system prompts) for agent and critic roles.
+
+    Personas are persisted to a JSON file so they survive restarts.
+    Three built-in personas are always available and can be edited.
+    """
+
+    _BUILTIN = [
+        {"id": "default-agent", "name": "Default Agent", "role": "agent",
+         "instructions": DEFAULT_AUTONOMOUS_PROMPT, "builtin": True},
+        {"id": "default-critic", "name": "Default Critic", "role": "critic",
+         "instructions": DEFAULT_CRITIC_PROMPT, "builtin": True},
+        {"id": "encourager", "name": "Encourager", "role": "critic",
+         "instructions": DEFAULT_ENCOURAGER_PROMPT, "builtin": True},
+    ]
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._personas = self._load()
+
+    # ── persistence ──────────────────────────────────────────────
+
+    def _load(self) -> List[dict]:
+        """Load personas from disk, merging with built-ins."""
+        saved = {}
+        try:
+            if os.path.exists(_PERSONAS_FILE):
+                with open(_PERSONAS_FILE, "r") as f:
+                    for p in json.load(f):
+                        saved[p["id"]] = p
+        except Exception:
+            pass
+        # Start with built-ins, applying any saved edits
+        result = []
+        for bp in self._BUILTIN:
+            if bp["id"] in saved:
+                merged = dict(bp)
+                merged["instructions"] = saved[bp["id"]].get("instructions", bp["instructions"])
+                merged["name"] = saved[bp["id"]].get("name", bp["name"])
+                result.append(merged)
+            else:
+                result.append(dict(bp))
+        # Append user-created personas
+        for pid, p in saved.items():
+            if not any(b["id"] == pid for b in self._BUILTIN):
+                result.append(p)
+        return result
+
+    def _save(self):
+        """Persist current personas to disk."""
+        try:
+            with open(_PERSONAS_FILE, "w") as f:
+                json.dump(self._personas, f, indent=2)
+        except Exception:
+            pass
+
+    # ── public API ───────────────────────────────────────────────
+
+    def list_personas(self, role: str = None) -> List[dict]:
+        """Return all personas, optionally filtered by role ('agent' or 'critic')."""
+        with self._lock:
+            if role:
+                return [p for p in self._personas if p.get("role") == role]
+            return list(self._personas)
+
+    def get(self, persona_id: str) -> Optional[dict]:
+        """Get a single persona by id."""
+        with self._lock:
+            for p in self._personas:
+                if p["id"] == persona_id:
+                    return dict(p)
+        return None
+
+    def create(self, name: str, role: str, instructions: str) -> dict:
+        """Create a new user persona."""
+        pid = f"user-{uuid.uuid4().hex[:8]}"
+        persona = {"id": pid, "name": name, "role": role,
+                   "instructions": instructions, "builtin": False}
+        with self._lock:
+            self._personas.append(persona)
+            self._save()
+        return persona
+
+    def update(self, persona_id: str, name: str = None, instructions: str = None) -> Optional[dict]:
+        """Update name and/or instructions for an existing persona."""
+        with self._lock:
+            for p in self._personas:
+                if p["id"] == persona_id:
+                    if name is not None:
+                        p["name"] = name
+                    if instructions is not None:
+                        p["instructions"] = instructions
+                    self._save()
+                    return dict(p)
+        return None
+
+    def delete(self, persona_id: str) -> bool:
+        """Delete a user-created persona. Built-ins cannot be deleted (only edited)."""
+        with self._lock:
+            for i, p in enumerate(self._personas):
+                if p["id"] == persona_id:
+                    if p.get("builtin"):
+                        return False
+                    del self._personas[i]
+                    self._save()
+                    return True
+        return False
+
+
+# Module-level singleton
+persona_manager = PersonaManager()
 
 
 def _load_persisted_instructions() -> dict:

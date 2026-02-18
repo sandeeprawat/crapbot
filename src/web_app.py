@@ -14,7 +14,7 @@ from urllib.parse import unquote
 from flask import Flask, render_template, request, jsonify, Response, make_response
 
 from ai_client import get_ai_client, AIClient
-from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox
+from autonomous_agent import AutonomousAgent, CriticAgent, AgentMailbox, persona_manager
 from deep_research_agent import ResearchOrchestrator
 from config import AGENT_NAME
 
@@ -403,21 +403,36 @@ def api_autonomous_start():
     """
     data = request.get_json(force=True)
     prompt = data.get("prompt", "").strip() or None
+    agent_persona_id = data.get("agent_persona_id")
+    critic_persona_id = data.get("critic_persona_id")
     timeout = _parse_timeout(data.get("timeout", "3600"))
     session_id = f"auto-{uuid.uuid4().hex[:8]}"
+
+    # Resolve persona prompts
+    agent_prompt = prompt  # explicit prompt overrides persona
+    critic_prompt = None
+    if not agent_prompt and agent_persona_id:
+        p = persona_manager.get(agent_persona_id)
+        if p:
+            agent_prompt = p["instructions"]
+    if critic_persona_id:
+        p = persona_manager.get(critic_persona_id)
+        if p:
+            critic_prompt = p["instructions"]
 
     # Inter-agent mailboxes (mirrors split_terminal.py wiring)
     agent_to_critic = AgentMailbox()
     critic_to_agent = AgentMailbox()
 
     agent = AutonomousAgent(
-        prompt=prompt,
+        prompt=agent_prompt,
         cycle_delay=30.0,
         on_output=lambda text: _session_output(session_id, text, "agent"),
         inbox=critic_to_agent,    # receives critic feedback
         outbox=agent_to_critic,   # sends output to critic
     )
     critic = CriticAgent(
+        prompt=critic_prompt,
         cycle_delay=5.0,
         on_output=lambda text: _session_output(session_id, text, "critic"),
         inbox=agent_to_critic,    # reads agent output
@@ -547,6 +562,55 @@ def api_reset():
     ai = _get_session_client()
     ai.reset_conversation()
     return jsonify({"status": "ok"})
+
+
+# ── Personas ─────────────────────────────────────────────────────────────────
+@app.route("/api/personas", methods=["GET"])
+@require_auth
+def api_personas_list():
+    """List all personas, optionally filtered by ?role=agent|critic."""
+    role = request.args.get("role")
+    return jsonify({"personas": persona_manager.list_personas(role)})
+
+
+@app.route("/api/personas", methods=["POST"])
+@require_auth
+def api_personas_create():
+    """Create a new persona."""
+    data = request.get_json(force=True)
+    name = data.get("name", "").strip()
+    role = data.get("role", "").strip()
+    instructions = data.get("instructions", "").strip()
+    if not name or not role or not instructions:
+        return jsonify({"error": "name, role, and instructions required"}), 400
+    if role not in ("agent", "critic"):
+        return jsonify({"error": "role must be 'agent' or 'critic'"}), 400
+    persona = persona_manager.create(name, role, instructions)
+    return jsonify(persona), 201
+
+
+@app.route("/api/personas/<persona_id>", methods=["PUT"])
+@require_auth
+def api_personas_update(persona_id: str):
+    """Update an existing persona's name and/or instructions."""
+    data = request.get_json(force=True)
+    updated = persona_manager.update(
+        persona_id,
+        name=data.get("name"),
+        instructions=data.get("instructions"),
+    )
+    if not updated:
+        return jsonify({"error": "Persona not found"}), 404
+    return jsonify(updated)
+
+
+@app.route("/api/personas/<persona_id>", methods=["DELETE"])
+@require_auth
+def api_personas_delete(persona_id: str):
+    """Delete a user-created persona (built-ins cannot be deleted)."""
+    if persona_manager.delete(persona_id):
+        return jsonify({"status": "ok"})
+    return jsonify({"error": "Cannot delete (built-in or not found)"}), 400
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

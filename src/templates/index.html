@@ -82,6 +82,32 @@
     .status-badge.running { background: var(--green); color: #000; }
     .status-badge.stopped, .status-badge.timed_out { background: var(--red); color: #fff; }
     .status-badge.idle { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border); }
+    .persona-row { display: flex; gap: 6px; align-items: center; width: 100%; }
+    .persona-row select { flex: 1; min-width: 100px; }
+    .persona-row .btn-edit-persona { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 3px 8px; font-size: .72rem; cursor: pointer; }
+    .persona-row .btn-edit-persona:hover { border-color: var(--accent); color: var(--fg); }
+
+    /* Persona modal */
+    .modal-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.6);
+                     display: flex; align-items: center; justify-content: center; }
+    .modal-overlay.hidden { display: none; }
+    .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+             width: 520px; max-height: 80vh; overflow-y: auto; padding: 20px; }
+    .modal h2 { font-size: 1rem; color: var(--accent); margin-bottom: 12px; }
+    .modal label { display: block; color: var(--fg2); font-size: .78rem; margin: 8px 0 3px; }
+    .modal input, .modal select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 6px 8px; font-size: .82rem; }
+    .modal textarea { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 8px; font-size: .82rem; min-height: 120px; resize: vertical;
+      font-family: inherit; }
+    .modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+    .modal .modal-actions button { border: none; border-radius: var(--radius); padding: 6px 16px;
+      cursor: pointer; font-size: .82rem; font-weight: 600; }
+    .modal .btn-save { background: var(--accent); color: #000; }
+    .modal .btn-cancel { background: var(--bg3); color: var(--fg); }
+    .modal .btn-delete { background: var(--red); color: #fff; }
+    .modal .modal-actions button:hover { opacity: .85; }
 
     /* Sessions list (collapsible) */
     .sessions-drawer { border-top: 1px solid var(--border); max-height: 150px; overflow-y: auto;
@@ -183,8 +209,15 @@
     </div>
     <!-- Session controls -->
     <div class="session-bar">
-      <label>Prompt:</label>
-      <input type="text" id="agentPrompt" placeholder="Optional custom prompt…">
+      <div class="persona-row">
+        <label>Agent:</label>
+        <select id="agentPersona"></select>
+        <button class="btn-edit-persona" onclick="openPersonaModal('agentPersona')">✏️</button>
+        <label>Critic:</label>
+        <select id="criticPersona"></select>
+        <button class="btn-edit-persona" onclick="openPersonaModal('criticPersona')">✏️</button>
+        <button class="btn-edit-persona" onclick="openPersonaModal(null)" title="Add new persona">＋</button>
+      </div>
       <label>Timeout:</label>
       <input type="number" id="timeoutValue" value="1" min="0" step="0.5">
       <select id="timeoutUnit">
@@ -201,6 +234,29 @@
         <summary id="sessionsTitle">All Sessions (0)</summary>
         <div id="sessionsBody"></div>
       </details>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Persona Edit/Add Modal ═══ -->
+<div class="modal-overlay hidden" id="personaModal">
+  <div class="modal">
+    <h2 id="personaModalTitle">Edit Persona</h2>
+    <input type="hidden" id="personaEditId">
+    <label>Name</label>
+    <input type="text" id="personaEditName" placeholder="e.g. Deep Thinker">
+    <label>Role</label>
+    <select id="personaEditRole">
+      <option value="agent">Agent</option>
+      <option value="critic">Critic</option>
+    </select>
+    <label>Instructions</label>
+    <textarea id="personaEditInstructions" placeholder="System prompt for this persona…"></textarea>
+    <div class="modal-actions">
+      <button class="btn-delete" id="personaDeleteBtn" onclick="deletePersona()" style="display:none">Delete</button>
+      <span style="flex:1"></span>
+      <button class="btn-cancel" onclick="closePersonaModal()">Cancel</button>
+      <button class="btn-save" onclick="savePersona()">Save</button>
     </div>
   </div>
 </div>
@@ -304,6 +360,7 @@ function initApp() {
   appInitialized = true;
   loadModels();
   loadToolsStatus();
+  loadPersonas();
   pollSessions();
   sessionTimer = setInterval(pollSessions, 5000);
 }
@@ -477,7 +534,8 @@ function getTimeoutSeconds() {
 }
 
 async function startAgentSession() {
-  const prompt = document.getElementById("agentPrompt").value.trim();
+  const agentPersonaId = document.getElementById("agentPersona").value;
+  const criticPersonaId = document.getElementById("criticPersona").value;
   const timeout = getTimeoutSeconds();
   const timeoutStr = timeout === null ? "unlimited" : String(timeout);
   document.getElementById("btnStartAgent").disabled = true;
@@ -488,7 +546,11 @@ async function startAgentSession() {
   try {
     const r = await fetch(API + "/api/autonomous/start", { method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ prompt: prompt || undefined, timeout: timeoutStr }) });
+      body: JSON.stringify({
+        agent_persona_id: agentPersonaId || undefined,
+        critic_persona_id: criticPersonaId || undefined,
+        timeout: timeoutStr
+      }) });
     const d = await r.json();
     activeSessionId = d.session_id;
     setRightPaneStatus(true);
@@ -547,6 +609,109 @@ async function stopSessionById(id) {
   await fetch(API + `/api/sessions/${encodeURIComponent(id)}/stop`, { method: "POST" });
   if (id === activeSessionId) onSessionEnded("stopped");
   pollSessions();
+}
+
+// ── Personas ────────────────────────────────────────────────────────────────
+let _allPersonas = [];
+
+async function loadPersonas() {
+  try {
+    const r = await fetch(API + "/api/personas");
+    const d = await r.json();
+    _allPersonas = d.personas || [];
+    populatePersonaSelect("agentPersona", "agent");
+    populatePersonaSelect("criticPersona", "critic");
+  } catch {}
+}
+
+function populatePersonaSelect(selectId, role) {
+  const sel = document.getElementById(selectId);
+  const prev = sel.value;
+  sel.innerHTML = "";
+  _allPersonas.filter(p => p.role === role).forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name + (p.builtin ? "" : " ★");
+    sel.appendChild(opt);
+  });
+  // Restore previous selection if still available
+  if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+}
+
+function openPersonaModal(fromSelectId) {
+  const modal = document.getElementById("personaModal");
+  const titleEl = document.getElementById("personaModalTitle");
+  const idEl = document.getElementById("personaEditId");
+  const nameEl = document.getElementById("personaEditName");
+  const roleEl = document.getElementById("personaEditRole");
+  const instrEl = document.getElementById("personaEditInstructions");
+  const delBtn = document.getElementById("personaDeleteBtn");
+
+  if (fromSelectId) {
+    // Edit existing persona
+    const sel = document.getElementById(fromSelectId);
+    const pid = sel.value;
+    const persona = _allPersonas.find(p => p.id === pid);
+    if (!persona) return;
+    titleEl.textContent = "Edit Persona";
+    idEl.value = persona.id;
+    nameEl.value = persona.name;
+    roleEl.value = persona.role;
+    instrEl.value = persona.instructions;
+    delBtn.style.display = persona.builtin ? "none" : "inline-block";
+  } else {
+    // Add new persona
+    titleEl.textContent = "Add Persona";
+    idEl.value = "";
+    nameEl.value = "";
+    roleEl.value = "agent";
+    instrEl.value = "";
+    delBtn.style.display = "none";
+  }
+  modal.classList.remove("hidden");
+}
+
+function closePersonaModal() {
+  document.getElementById("personaModal").classList.add("hidden");
+}
+
+async function savePersona() {
+  const id = document.getElementById("personaEditId").value;
+  const name = document.getElementById("personaEditName").value.trim();
+  const role = document.getElementById("personaEditRole").value;
+  const instructions = document.getElementById("personaEditInstructions").value.trim();
+  if (!name || !instructions) { alert("Name and instructions are required."); return; }
+
+  try {
+    if (id) {
+      // Update existing
+      await fetch(API + `/api/personas/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ name, instructions })
+      });
+    } else {
+      // Create new
+      await fetch(API + "/api/personas", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ name, role, instructions })
+      });
+    }
+    closePersonaModal();
+    await loadPersonas();
+  } catch (err) { alert("Failed to save persona: " + err.message); }
+}
+
+async function deletePersona() {
+  const id = document.getElementById("personaEditId").value;
+  if (!id) return;
+  if (!confirm("Delete this persona?")) return;
+  try {
+    await fetch(API + `/api/personas/${encodeURIComponent(id)}`, { method: "DELETE" });
+    closePersonaModal();
+    await loadPersonas();
+  } catch (err) { alert("Failed to delete persona: " + err.message); }
 }
 </script>
 </body>
